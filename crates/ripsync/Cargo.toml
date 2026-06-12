@@ -64,3 +64,29 @@ filetime.workspace = true
 # `#[cfg(unix)]`.
 [target.'cfg(unix)'.dev-dependencies]
 xattr.workspace = true
+
+# Debian packaging for `cargo deb`. Generated man page + completions come from
+# `cargo xtask dist-assets` (run by packaging/deb/build.sh before `cargo deb`).
+[package.metadata.deb]
+maintainer = "ripsync contributors <ionescudan888@gmail.com>"
+copyright = "2026, ripsync contributors"
+license-file = ["../../LICENSE-MIT", "0"]
+extended-description = """
+ripsync is a fast, memory-safe local directory synchronization tool written in
+Rust. It mirrors a source tree into a destination using copy-on-write reflinks
+where available, a persistent index for quick re-syncs, an operator TUI, and
+optional post-copy verification. Its containment checks reject the symlink
+path-traversal bug class by construction."""
+section = "utils"
+priority = "optional"
+depends = "$auto"
+assets = [
+    ["target/release/ripsync", "usr/bin/", "755"],
+    ["dist/assets/ripsync.1", "usr/share/man/man1/", "644"],
+    ["dist/assets/ripsync.bash", "usr/share/bash-completion/completions/ripsync", "644"],
+    ["dist/assets/ripsync.fish", "usr/share/fish/vendor_completions.d/ripsync.fish", "644"],
+    ["dist/assets/_ripsync", "usr/share/zsh/vendor-completions/_ripsync", "644"],
+    ["README.md", "usr/share/doc/ripsync/README.md", "644"],
+    ["LICENSE-MIT", "usr/share/doc/ripsync/LICENSE-MIT", "644"],
+    ["LICENSE-APACHE", "usr/share/doc/ripsync/LICENSE-APACHE", "644"],
+]
