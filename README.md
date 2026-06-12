@@ -7,9 +7,16 @@
 
 > rsync's superpower, none of its footguns.
 
-ripsync is a local directory synchronization tool written in Rust. Version 0.3
-focuses on operator control, indexed re-syncs, and optional post-copy
-verification. Remote sync and watch mode are not implemented.
+![ripsync TUI demo](docs/assets/ripsync-demo.gif)
+
+ripsync is a fast, memory-safe local directory synchronization tool written in
+Rust, with copy-on-write backends per platform (Linux io_uring/reflink, Windows
+ReFS, macOS clonefile), a persistent index for quick re-syncs, an operator TUI,
+and optional post-copy verification. Remote sync and watch mode are not
+implemented.
+
+The full documentation is an [mdBook](docs/SUMMARY.md) (deployed to GitHub
+Pages); see the [installation matrix](docs/install.md) for every install method.
 
 ## Quick Start
 
