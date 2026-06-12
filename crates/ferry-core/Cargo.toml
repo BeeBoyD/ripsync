@@ -22,9 +22,17 @@ num_cpus.workspace = true
 reflink-copy.workspace = true
 bincode.workspace = true
 
+[features]
+default = ["io-uring"]
+# Linux io_uring batched-I/O backend (no effect off Linux).
+io-uring = []
+
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
 xattr.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

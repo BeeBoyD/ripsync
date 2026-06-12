@@ -183,6 +183,10 @@ fn run_rsync(src: &Path, dst: &Path, delete: bool) {
 fn run_ferry(src: &Path, dst: &Path, delete: bool) {
     let mut cmd = Command::new(ferry_bin());
     cmd.arg(src).arg(dst).arg("--no-tui").arg("-q");
+    // Exercise a specific backend when requested (the harness must pass on both).
+    if let Ok(backend) = std::env::var("FERRY_TEST_BACKEND") {
+        cmd.arg("--backend").arg(backend);
+    }
     if delete {
         cmd.arg("--delete").arg("--yes");
     }

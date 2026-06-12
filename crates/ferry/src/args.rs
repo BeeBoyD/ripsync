@@ -45,6 +45,12 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = FsyncArg::Auto)]
     pub fsync: FsyncArg,
 
+    /// File-copy backend. `auto` uses io_uring on Linux when available and the
+    /// portable path otherwise; `uring`/`portable` force one. Output is
+    /// byte-identical regardless.
+    #[arg(long, value_enum, default_value_t = BackendArg::Auto)]
+    pub backend: BackendArg,
+
     /// Exclude paths matching this glob (repeatable).
     #[arg(long, value_name = "PAT")]
     pub exclude: Vec<String>,
@@ -125,6 +131,27 @@ impl From<FsyncArg> for ferry_core::copy::FsyncMode {
             FsyncArg::Auto => Self::Auto,
             FsyncArg::Always => Self::Always,
             FsyncArg::Never => Self::Never,
+        }
+    }
+}
+
+/// CLI form of the copy backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum BackendArg {
+    /// io_uring on Linux when available, else portable.
+    Auto,
+    /// Force the io_uring backend.
+    Uring,
+    /// Force the portable backend.
+    Portable,
+}
+
+impl From<BackendArg> for ferry_core::apply::Backend {
+    fn from(a: BackendArg) -> Self {
+        match a {
+            BackendArg::Auto => Self::Auto,
+            BackendArg::Uring => Self::Uring,
+            BackendArg::Portable => Self::Portable,
         }
     }
 }

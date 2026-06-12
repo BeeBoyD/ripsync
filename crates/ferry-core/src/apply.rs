@@ -21,6 +21,18 @@ use crate::report::{Event, Reporter, Stats};
 use crate::walk::{Entry, EntryKind};
 use crate::{Error, Result};
 
+/// Which file-copy backend to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backend {
+    /// `io_uring` on Linux when available, else portable.
+    #[default]
+    Auto,
+    /// Force the `io_uring` batched backend (Linux).
+    Uring,
+    /// Force the portable reflink/`copy_file_range`/buffered backend.
+    Portable,
+}
+
 /// Knobs controlling how a plan is applied.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ApplyOptions {
@@ -36,6 +48,8 @@ pub struct ApplyOptions {
     pub reflink: ReflinkMode,
     /// Per-file fsync strategy.
     pub fsync: FsyncMode,
+    /// File-copy backend selection.
+    pub backend: Backend,
 }
 
 /// Thread-safe running totals.
@@ -184,28 +198,9 @@ fn apply_real<R: Reporter>(
         counters.bump_action(action);
     }
 
-    // 2. Files in parallel.
+    // 2. Files.
     let pool = build_pool(opts.threads);
-    let run_files = || {
-        files.par_iter().for_each(|(entry, action)| {
-            reporter.event(Event::FileStart {
-                rel: entry.rel.clone(),
-                len: entry.len,
-            });
-            match copy_file_atomic(src, &root_canon, entry, opts.reflink, opts.fsync) {
-                Ok(bytes) => {
-                    counters.bytes.fetch_add(bytes, Ordering::Relaxed);
-                    counters.bump_action(*action);
-                    reporter.event(Event::FileDone {
-                        rel: entry.rel.clone(),
-                        action: *action,
-                        bytes,
-                    });
-                }
-                Err(e) => report_fail(reporter, counters, &entry.rel, &e),
-            }
-        });
-    };
+    let run_files = || copy_files(&files, src, &root_canon, opts, reporter, counters);
     match &pool {
         Some(p) => p.install(run_files),
         None => run_files(),
@@ -339,7 +334,46 @@ fn report_fail<R: Reporter>(reporter: &R, counters: &Counters, rel: &Path, err: 
     });
 }
 
-/// Atomically copy one file, preserving mode and mtime. Returns bytes written.
+/// Resolve the concrete `(target, tmp)` paths for a file, enforcing containment.
+fn prepare_paths(
+    root_canon: &Path,
+    entry: &Entry,
+) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
+    let dst_path = root_canon.join(&entry.rel);
+    let target = contained_target(root_canon, &dst_path)?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| Error::Containment(target.clone()))?;
+    let tmp = parent.join(format!(".ferry-tmp-{:016x}", rand::random::<u64>()));
+    Ok((target, tmp))
+}
+
+/// Apply metadata to `tmp`, then atomically rename it over `target`.
+fn finalize_file(target: &Path, tmp: &Path, entry: &Entry, fsync: FsyncMode) -> Result<()> {
+    set_mode(tmp, entry.mode)?;
+    set_mtime(tmp, entry.mtime)?;
+    if fsync == FsyncMode::Always {
+        if let Ok(f) = std::fs::File::open(tmp) {
+            let _ = f.sync_all();
+        }
+    }
+    // A directory in the way (type change dir → file): rename can't replace it.
+    if let Ok(meta) = std::fs::symlink_metadata(target) {
+        if meta.is_dir() {
+            if let Err(e) = std::fs::remove_dir_all(target) {
+                let _ = std::fs::remove_file(tmp);
+                return Err(Error::io(target, e));
+            }
+        }
+    }
+    if let Err(e) = std::fs::rename(tmp, target) {
+        let _ = std::fs::remove_file(tmp);
+        return Err(Error::io(target, e));
+    }
+    Ok(())
+}
+
+/// Portable single-file copy: prepare → ladder → finalize. Returns bytes written.
 fn copy_file_atomic(
     src: &Path,
     root_canon: &Path,
@@ -348,14 +382,7 @@ fn copy_file_atomic(
     fsync: FsyncMode,
 ) -> Result<u64> {
     let src_path = src.join(&entry.rel);
-    let dst_path = root_canon.join(&entry.rel);
-    let target = contained_target(root_canon, &dst_path)?;
-    let parent = target
-        .parent()
-        .ok_or_else(|| Error::Containment(target.clone()))?;
-
-    let tmp = parent.join(format!(".ferry-tmp-{:016x}", rand::random::<u64>()));
-
+    let (target, tmp) = prepare_paths(root_canon, entry)?;
     // Copy ladder: reflink → copy_file_range → buffered. `tmp` must not pre-exist.
     let bytes = match copy_file_into(&src_path, &tmp, reflink) {
         Ok(b) => b,
@@ -364,30 +391,133 @@ fn copy_file_atomic(
             return Err(Error::io(&src_path, e));
         }
     };
-
-    // Metadata onto the temp file.
-    set_mode(&tmp, entry.mode)?;
-    set_mtime(&tmp, entry.mtime)?;
-    // Optional per-file durability.
-    if fsync == FsyncMode::Always {
-        if let Ok(f) = std::fs::File::open(&tmp) {
-            let _ = f.sync_all();
-        }
-    }
-    // A directory in the way (type change dir → file): rename can't replace it.
-    if let Ok(meta) = std::fs::symlink_metadata(&target) {
-        if meta.is_dir() {
-            if let Err(e) = std::fs::remove_dir_all(&target) {
-                let _ = std::fs::remove_file(&tmp);
-                return Err(Error::io(&target, e));
-            }
-        }
-    }
-    if let Err(e) = std::fs::rename(&tmp, &target) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(Error::io(&target, e));
-    }
+    finalize_file(&target, &tmp, entry, fsync)?;
     Ok(bytes)
+}
+
+/// Dispatch the file-copy phase to the selected backend.
+fn copy_files<R: Reporter>(
+    files: &[(&Entry, Action)],
+    src: &Path,
+    root_canon: &Path,
+    opts: ApplyOptions,
+    reporter: &R,
+    counters: &Counters,
+) {
+    #[cfg(all(target_os = "linux", feature = "io-uring"))]
+    {
+        if opts.backend != Backend::Portable {
+            copy_files_uring(files, src, root_canon, opts, reporter, counters);
+            return;
+        }
+    }
+    copy_files_portable(files, src, root_canon, opts, reporter, counters);
+}
+
+/// Portable backend: one atomic copy per file across the rayon pool.
+fn copy_files_portable<R: Reporter>(
+    files: &[(&Entry, Action)],
+    src: &Path,
+    root_canon: &Path,
+    opts: ApplyOptions,
+    reporter: &R,
+    counters: &Counters,
+) {
+    files.par_iter().for_each(|(entry, action)| {
+        reporter.event(Event::FileStart {
+            rel: entry.rel.clone(),
+            len: entry.len,
+        });
+        match copy_file_atomic(src, root_canon, entry, opts.reflink, opts.fsync) {
+            Ok(bytes) => {
+                counters.bytes.fetch_add(bytes, Ordering::Relaxed);
+                counters.bump_action(*action);
+                reporter.event(Event::FileDone {
+                    rel: entry.rel.clone(),
+                    action: *action,
+                    bytes,
+                });
+            }
+            Err(e) => report_fail(reporter, counters, &entry.rel, &e),
+        }
+    });
+}
+
+/// `io_uring` backend: batch the data copy through one ring, then finalize each
+/// file in parallel. Anything the ring rejects falls back to the portable copy.
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+fn copy_files_uring<R: Reporter>(
+    files: &[(&Entry, Action)],
+    src: &Path,
+    root_canon: &Path,
+    opts: ApplyOptions,
+    reporter: &R,
+    counters: &Counters,
+) {
+    use crate::io::uring::{self, Job};
+
+    // Prepare paths sequentially (containment), reporting prep failures.
+    struct Prepared<'a> {
+        entry: &'a Entry,
+        action: Action,
+        src_path: std::path::PathBuf,
+        target: std::path::PathBuf,
+        tmp: std::path::PathBuf,
+    }
+    let mut prepared: Vec<Prepared> = Vec::with_capacity(files.len());
+    for (entry, action) in files {
+        reporter.event(Event::FileStart {
+            rel: entry.rel.clone(),
+            len: entry.len,
+        });
+        match prepare_paths(root_canon, entry) {
+            Ok((target, tmp)) => prepared.push(Prepared {
+                entry,
+                action: *action,
+                src_path: src.join(&entry.rel),
+                target,
+                tmp,
+            }),
+            Err(e) => report_fail(reporter, counters, &entry.rel, &e),
+        }
+    }
+
+    let jobs: Vec<Job> = prepared
+        .iter()
+        .map(|p| Job {
+            src: &p.src_path,
+            tmp: &p.tmp,
+            len: p.entry.len,
+        })
+        .collect();
+    let batch = uring::copy_batch(&jobs);
+
+    // Finalize in parallel; uring rejects fall back to the portable ladder.
+    prepared.par_iter().zip(batch).for_each(|(p, res)| {
+        let outcome = if let Ok(bytes) = res {
+            finalize_file(&p.target, &p.tmp, p.entry, opts.fsync).map(|()| bytes)
+        } else {
+            // Fall back: remove any partial temp, then portable copy.
+            let _ = std::fs::remove_file(&p.tmp);
+            copy_file_into(&p.src_path, &p.tmp, opts.reflink)
+                .map_err(|e| Error::io(&p.src_path, e))
+                .and_then(|bytes| {
+                    finalize_file(&p.target, &p.tmp, p.entry, opts.fsync).map(|()| bytes)
+                })
+        };
+        match outcome {
+            Ok(bytes) => {
+                counters.bytes.fetch_add(bytes, Ordering::Relaxed);
+                counters.bump_action(p.action);
+                reporter.event(Event::FileDone {
+                    rel: p.entry.rel.clone(),
+                    action: p.action,
+                    bytes,
+                });
+            }
+            Err(e) => report_fail(reporter, counters, &p.entry.rel, &e),
+        }
+    });
 }
 
 /// Create (or replace) a symlink, copying its target verbatim — never followed.

@@ -180,6 +180,7 @@ fn spawn_worker(
         threads,
         reflink: args.reflink.into(),
         fsync: args.fsync.into(),
+        backend: args.backend.into(),
     };
     let state = Arc::clone(state);
     let done = Arc::clone(done);

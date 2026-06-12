@@ -89,6 +89,7 @@ fn main() -> Result<()> {
             threads,
             reflink: args.reflink.into(),
             fsync: args.fsync.into(),
+            backend: args.backend.into(),
         },
         &reporter,
     )
