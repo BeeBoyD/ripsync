@@ -1,0 +1,51 @@
+//! Error types for `ferry-core`. Library code returns [`Result`]; it never
+//! panics on bad input.
+
+use std::path::PathBuf;
+
+/// Convenience alias for results produced by `ferry-core`.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Errors that can arise while planning or applying a sync.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// An underlying I/O failure, annotated with the offending path.
+    #[error("I/O error at {path}: {source}")]
+    Io {
+        /// Path that triggered the error.
+        path: PathBuf,
+        /// The underlying I/O error.
+        source: std::io::Error,
+    },
+
+    /// A bare I/O failure with no associated path.
+    #[error(transparent)]
+    BareIo(#[from] std::io::Error),
+
+    /// A path escaped the destination root (containment violation).
+    #[error("path escapes destination root: {0}")]
+    Containment(PathBuf),
+
+    /// `--delete` was requested but the source is empty or unreadable.
+    #[error("refusing to mirror deletions: source is empty or unreadable ({0})")]
+    EmptySource(PathBuf),
+
+    /// An exclude/glob pattern failed to compile.
+    #[error("invalid exclude pattern: {0}")]
+    Pattern(String),
+
+    /// A delta could not be applied to the supplied basis.
+    #[error("delta apply failed: {0}")]
+    DeltaApply(String),
+}
+
+impl Error {
+    /// Wrap an [`std::io::Error`] together with the path that produced it.
+    #[must_use]
+    pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+        Error::Io {
+            path: path.into(),
+            source,
+        }
+    }
+}

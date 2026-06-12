@@ -1,0 +1,31 @@
+[package]
+name = "ferry-cli"
+description = "Ferry CLI: a fast, memory-safe rsync alternative."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "ferry"
+path = "src/main.rs"
+
+[dependencies]
+ferry-core = { path = "../ferry-core" }
+anyhow.workspace = true
+clap.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+toml.workspace = true
+num_cpus.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+tempfile.workspace = true
+predicates = "3"
