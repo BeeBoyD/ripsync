@@ -1,0 +1,9 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+ripsync = { path = "../crates/ripsync", default-features = false, features = ["system-malloc"] }
+anyhow.workspace = true
