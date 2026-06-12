@@ -30,3 +30,6 @@ num_cpus.workspace = true
 assert_cmd.workspace = true
 tempfile.workspace = true
 predicates = "3"
+proptest.workspace = true
+blake3.workspace = true
+filetime.workspace = true

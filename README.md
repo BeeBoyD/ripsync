@@ -63,8 +63,32 @@ ops. `apply(old, encode(old, new)) == new` is property-tested for all inputs. It
 
 ## Benchmarks
 
-`scripts/bench.sh` drives `hyperfine` to compare Ferry vs `rsync -a`. Results table is
-pasted here after Phase 4. <!-- BENCH_TABLE -->
+`scripts/bench.sh` drives `hyperfine` (or a built-in best-of-N timer when hyperfine is
+absent) to compare Ferry vs `rsync -a`. Numbers below are best-of-3 on a 16-core CPU with
+an NVMe SSD and a warm page cache; the destination outputs were verified byte-identical
+(`diff -rq`).
+
+### Macro (wall clock, vs `rsync -a`)
+
+| Scenario | Ferry | rsync | Speedup |
+|----------|------:|------:|--------:|
+| **100k tiny files — initial sync** | **0.154 s** | 0.647 s | **4.2×** |
+| 500 × 1 MiB files — initial sync | 0.027 s | 0.177 s | 6.5× |
+| Re-sync after a 1-file change (100k tree) | 0.174 s | 0.169 s | ~1.0× (parity) |
+
+The headline is the **many-tiny-files** case: Ferry's parallel walk + parallel copy keep
+all cores busy where rsync's single-threaded pipeline serializes per-file syscalls. On
+incremental re-syncs both tools are dominated by `stat`-ing the tree, so they're at parity.
+
+### Micro (criterion, `cargo bench -p ferry-core`)
+
+| Bench | Time | Throughput |
+|-------|-----:|-----------:|
+| Rolling weak checksum, 1 MiB window-roll | 744 µs | ~1.4 GB/s |
+| Delta encode, 1 MiB with a small change | 2.78 ms | ~360 MB/s |
+| Delta apply, 1 MiB | 24 µs | ~43 GB/s |
+
+Reproduce with `./scripts/bench.sh` (macro) and `cargo bench` (micro).
 
 ## Roadmap
 

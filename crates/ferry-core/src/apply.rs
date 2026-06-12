@@ -151,6 +151,15 @@ fn apply_real<R: Reporter>(
     for entry in &dirs {
         let action = action_for_existing(dst, entry);
         let target = root_canon.join(&entry.rel);
+        // A non-directory in the way (type change file/symlink → dir): clear it.
+        if let Ok(meta) = std::fs::symlink_metadata(&target) {
+            if !meta.is_dir() {
+                if let Err(e) = std::fs::remove_file(&target).map_err(|e| Error::io(&target, e)) {
+                    report_fail(reporter, counters, &entry.rel, &e);
+                    continue;
+                }
+            }
+        }
         if let Err(e) = std::fs::create_dir_all(&target).map_err(|e| Error::io(&target, e)) {
             report_fail(reporter, counters, &entry.rel, &e);
             continue;
@@ -221,20 +230,30 @@ fn apply_real<R: Reporter>(
 
     // 5. Guarded deletions (deepest first).
     if opts.delete && opts.yes {
-        for del in &plan.deletions {
-            match delete_entry(&root_canon, &del.rel, del.is_dir) {
-                Ok(()) => {
-                    reporter.event(Event::Deleted {
-                        rel: del.rel.clone(),
-                    });
-                    counters.deleted.fetch_add(1, Ordering::Relaxed);
-                }
-                Err(e) => report_fail(reporter, counters, &del.rel, &e),
-            }
-        }
+        run_deletions(plan, &root_canon, reporter, counters);
     }
 
     Ok(())
+}
+
+/// Execute the (already gated) deletion phase, deepest paths first.
+fn run_deletions<R: Reporter>(
+    plan: &SyncPlan,
+    root_canon: &Path,
+    reporter: &R,
+    counters: &Counters,
+) {
+    for del in &plan.deletions {
+        match delete_entry(root_canon, &del.rel, del.is_dir) {
+            Ok(()) => {
+                reporter.event(Event::Deleted {
+                    rel: del.rel.clone(),
+                });
+                counters.deleted.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(e) => report_fail(reporter, counters, &del.rel, &e),
+        }
+    }
 }
 
 fn build_pool(threads: usize) -> Option<rayon::ThreadPool> {
@@ -318,6 +337,15 @@ fn copy_file_atomic(src: &Path, root_canon: &Path, entry: &Entry) -> Result<u64>
     // Metadata onto the temp file, then atomic swap into place.
     set_mode(&tmp, entry.mode)?;
     set_mtime(&tmp, entry.mtime)?;
+    // A directory in the way (type change dir → file): rename can't replace it.
+    if let Ok(meta) = std::fs::symlink_metadata(&target) {
+        if meta.is_dir() {
+            if let Err(e) = std::fs::remove_dir_all(&target) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(Error::io(&target, e));
+            }
+        }
+    }
     if let Err(e) = std::fs::rename(&tmp, &target) {
         let _ = std::fs::remove_file(&tmp);
         return Err(Error::io(&target, e));
@@ -365,19 +393,51 @@ fn symlink_impl(_target: &Path, link: &Path) -> Result<()> {
     ))
 }
 
+/// Whether any strict ancestor of `rel` (under `root_canon`) is a symlink.
+fn has_symlink_ancestor(root_canon: &Path, rel: &Path) -> bool {
+    let mut prefix = root_canon.to_path_buf();
+    let comps: Vec<_> = rel.components().collect();
+    // Iterate ancestors only (exclude the final component itself).
+    for comp in &comps[..comps.len().saturating_sub(1)] {
+        prefix.push(comp);
+        match std::fs::symlink_metadata(&prefix) {
+            Ok(m) if m.file_type().is_symlink() => return true,
+            Ok(_) => {}
+            Err(_) => return true, // ancestor vanished ⇒ entry is gone too
+        }
+    }
+    false
+}
+
 /// Delete one destination entry, after confirming containment.
+///
+/// A previously planned entry may already be gone (e.g. it was inside a
+/// directory that a type-change replacement removed); that is treated as success
+/// since the goal is its absence.
 fn delete_entry(root_canon: &Path, rel: &Path, is_dir: bool) -> Result<()> {
     check_relative(rel)?;
+    // If any ancestor component is a symlink, this logical path no longer points
+    // at the originally-planned entry (e.g. a dir was replaced by a symlink) —
+    // deleting through it would clobber a sibling. The entry is already gone.
+    if has_symlink_ancestor(root_canon, rel) {
+        return Ok(());
+    }
     let path = root_canon.join(rel);
+    // Already absent (or its parent vanished)? Nothing to do.
+    if std::fs::symlink_metadata(&path).is_err() {
+        return Ok(());
+    }
     let target = contained_target(root_canon, &path)?;
-    if is_dir {
+    let result = if is_dir {
         // Directory should be empty by now (deepest-first order); fall back to
         // recursive removal if not.
-        match std::fs::remove_dir(&target) {
-            Ok(()) => Ok(()),
-            Err(_) => std::fs::remove_dir_all(&target).map_err(|e| Error::io(&target, e)),
-        }
+        std::fs::remove_dir(&target).or_else(|_| std::fs::remove_dir_all(&target))
     } else {
-        std::fs::remove_file(&target).map_err(|e| Error::io(&target, e))
+        std::fs::remove_file(&target)
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::io(&target, e)),
     }
 }
