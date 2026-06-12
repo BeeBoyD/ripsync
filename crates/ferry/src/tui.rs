@@ -1,43 +1,86 @@
-//! Live `ratatui` dashboard: overall progress, throughput sparkline, active
-//! transfers, a red TO-DELETE panel, and a scrollable event log.
-//!
-//! The sync runs on a worker thread feeding a shared [`TuiState`] through
-//! [`TuiReporter`]; the main thread owns the terminal, draws at ~20 fps, and
-//! handles keys (`q` quit, `p` pause display, `↑/↓` scroll the log).
+//! Interactive lifecycle dashboard.
 
 use std::collections::VecDeque;
 use std::io;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event as CtEvent, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event as CtEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ferry_core::apply::{ApplyOptions, MetadataOptions, apply_plan_controlled};
+use ferry_core::index::Manifest;
+use ferry_core::plan::{Action, PlanOptions, build_plan_controlled};
+use ferry_core::report::{Event, Reporter, RunPhase, RunStatus};
+use ferry_core::verify::{VerificationSummary, verify};
+use ferry_core::{Error, RunControl};
+use globset::GlobSet;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Sparkline};
-
-use ferry_core::apply::{ApplyOptions, MetadataOptions, apply_plan};
-use ferry_core::index::Manifest;
-use ferry_core::plan::SyncPlan;
-use ferry_core::report::{Event, Reporter, Stats};
+use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Tabs, Wrap};
 
 use crate::args::Args;
 
-const LOG_CAP: usize = 1000;
-const SPARK_CAP: usize = 120;
+const LOG_CAP: usize = 4000;
 
-/// Shared, mutable dashboard state.
-#[derive(Default)]
+#[derive(Clone)]
+struct Approval {
+    state: Arc<(Mutex<Option<bool>>, Condvar)>,
+}
+
+impl Approval {
+    fn new() -> Self {
+        Self {
+            state: Arc::new((Mutex::new(None), Condvar::new())),
+        }
+    }
+
+    fn decide(&self, approved: bool) {
+        let (lock, wake) = &*self.state;
+        *lock.lock().unwrap() = Some(approved);
+        wake.notify_all();
+    }
+
+    fn wait(&self, control: &RunControl) -> ferry_core::Result<bool> {
+        let (lock, wake) = &*self.state;
+        let mut decision = lock.lock().unwrap();
+        while decision.is_none() {
+            if control.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let result = wake
+                .wait_timeout(decision, Duration::from_millis(100))
+                .unwrap();
+            decision = result.0;
+        }
+        Ok(decision.unwrap_or(false))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LogLine {
+    kind: LogKind,
+    text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogKind {
+    Activity,
+    Delete,
+    Error,
+    Verify,
+}
+
 struct TuiState {
+    phase: RunPhase,
+    backend: String,
+    backend_reason: String,
+    planning_entries: usize,
     total_files: usize,
     total_bytes: u64,
     files_done: u64,
@@ -47,463 +90,771 @@ struct TuiState {
     deleted: u64,
     skipped: u64,
     errors: u64,
+    verify_checked: usize,
+    verify_total: usize,
+    verify_errors: usize,
     active: Vec<String>,
     deletions: Vec<String>,
-    log: VecDeque<String>,
-    /// Throughput samples in bytes/sec for the sparkline.
-    spark: VecDeque<u64>,
+    log: VecDeque<LogLine>,
+    started: Instant,
     finished: bool,
 }
 
-impl TuiState {
-    fn push_log(&mut self, line: String) {
-        if self.log.len() == LOG_CAP {
-            self.log.pop_front();
+impl Default for TuiState {
+    fn default() -> Self {
+        Self {
+            phase: RunPhase::Planning,
+            backend: "pending".into(),
+            backend_reason: String::new(),
+            planning_entries: 0,
+            total_files: 0,
+            total_bytes: 0,
+            files_done: 0,
+            bytes_done: 0,
+            copied: 0,
+            updated: 0,
+            deleted: 0,
+            skipped: 0,
+            errors: 0,
+            verify_checked: 0,
+            verify_total: 0,
+            verify_errors: 0,
+            active: Vec::new(),
+            deletions: Vec::new(),
+            log: VecDeque::new(),
+            started: Instant::now(),
+            finished: false,
         }
-        self.log.push_back(line);
     }
 }
 
-/// A [`Reporter`] that funnels engine events into [`TuiState`].
+impl TuiState {
+    fn log(&mut self, kind: LogKind, text: String) {
+        if self.log.len() == LOG_CAP {
+            self.log.pop_front();
+        }
+        self.log.push_back(LogLine { kind, text });
+    }
+}
+
 struct TuiReporter {
     state: Arc<Mutex<TuiState>>,
 }
 
 impl Reporter for TuiReporter {
-    fn event(&self, ev: Event) {
-        let mut s = self.state.lock().unwrap();
-        match ev {
+    fn event(&self, event: Event) {
+        let mut state = self.state.lock().unwrap();
+        match event {
+            Event::Phase(phase) => state.phase = phase,
+            Event::PlanningProgress { entries } => state.planning_entries = entries,
+            Event::BackendSelected { backend, reason } => {
+                state.backend = backend.into();
+                state.backend_reason = reason.into();
+            }
             Event::Planned {
                 total_files,
                 total_bytes,
-                ..
+                deletions,
             } => {
-                s.total_files = total_files;
-                s.total_bytes = total_bytes;
+                state.total_files = total_files;
+                state.total_bytes = total_bytes;
+                state.deletions.reserve(deletions);
             }
-            Event::FileStart { rel, .. } => {
-                s.active.push(rel.display().to_string());
+            Event::FileStart { rel, len } => {
+                state
+                    .active
+                    .push(format!("{} ({})", rel.display(), size(len)));
             }
             Event::FileDone { rel, action, bytes } => {
-                let r = rel.display().to_string();
-                if let Some(i) = s.active.iter().position(|a| *a == r) {
-                    s.active.swap_remove(i);
+                let prefix = rel.display().to_string();
+                if let Some(index) = state
+                    .active
+                    .iter()
+                    .position(|path| path.starts_with(&prefix))
+                {
+                    state.active.swap_remove(index);
                 }
-                s.files_done += 1;
-                s.bytes_done += bytes;
+                state.files_done += 1;
+                state.bytes_done += bytes;
                 match action {
-                    ferry_core::plan::Action::Copy => s.copied += 1,
-                    ferry_core::plan::Action::Update => s.updated += 1,
-                    ferry_core::plan::Action::Skip => s.skipped += 1,
+                    Action::Copy => state.copied += 1,
+                    Action::Update => state.updated += 1,
+                    Action::Skip => state.skipped += 1,
                 }
-                s.push_log(format!("{:<7}{r} ({bytes} B)", action_word(action)));
+                state.log(
+                    LogKind::Activity,
+                    format!(
+                        "{} {} ({})",
+                        action_word(action),
+                        rel.display(),
+                        size(bytes)
+                    ),
+                );
             }
-            Event::DirDone { rel, action } => {
+            Event::DirDone { rel, action } | Event::SymlinkDone { rel, action } => {
                 match action {
-                    ferry_core::plan::Action::Copy => s.copied += 1,
-                    ferry_core::plan::Action::Update => s.updated += 1,
-                    ferry_core::plan::Action::Skip => s.skipped += 1,
+                    Action::Copy => state.copied += 1,
+                    Action::Update => state.updated += 1,
+                    Action::Skip => state.skipped += 1,
                 }
-                s.push_log(format!("{:<7}{}/", action_word(action), rel.display()));
+                state.log(
+                    LogKind::Activity,
+                    format!("{} {}", action_word(action), rel.display()),
+                );
             }
-            Event::SymlinkDone { rel, action } => {
-                match action {
-                    ferry_core::plan::Action::Copy => s.copied += 1,
-                    ferry_core::plan::Action::Update => s.updated += 1,
-                    ferry_core::plan::Action::Skip => s.skipped += 1,
-                }
-                s.push_log(format!(
-                    "{:<7}{} (symlink)",
-                    action_word(action),
-                    rel.display()
-                ));
-            }
-            Event::Skipped { .. } => {
-                s.skipped += 1;
-            }
+            Event::Skipped { .. } => state.skipped += 1,
             Event::Deleted { rel } => {
-                s.deleted += 1;
-                s.push_log(format!("delete {}", rel.display()));
+                state.deleted += 1;
+                state.log(LogKind::Delete, format!("delete {}", rel.display()));
             }
             Event::Failed { rel, error } => {
-                s.errors += 1;
-                s.push_log(format!("ERROR  {}: {error}", rel.display()));
+                state.errors += 1;
+                state.log(LogKind::Error, format!("{}: {error}", rel.display()));
+            }
+            Event::VerificationProgress {
+                checked,
+                total,
+                mismatches,
+            } => {
+                state.verify_checked = checked;
+                state.verify_total = total;
+                state.verify_errors = mismatches;
+            }
+            Event::VerificationFailed { rel, detail } => {
+                state.log(LogKind::Verify, format!("{}: {detail}", rel.display()));
+            }
+            Event::Finished { status } => {
+                state.finished = true;
+                state.phase = match status {
+                    RunStatus::Success => RunPhase::Done,
+                    RunStatus::Cancelled => RunPhase::Cancelled,
+                    RunStatus::Failed => RunPhase::Failed,
+                };
             }
         }
     }
 }
 
-fn action_word(a: ferry_core::plan::Action) -> &'static str {
-    match a {
-        ferry_core::plan::Action::Copy => "copy",
-        ferry_core::plan::Action::Update => "update",
-        ferry_core::plan::Action::Skip => "skip",
+struct TerminalGuard {
+    terminal: Terminal<CrosstermBackend<io::Stdout>>,
+}
+
+impl TerminalGuard {
+    fn enter() -> Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+            let _ = disable_raw_mode();
+            return Err(error.into());
+        }
+        Ok(Self {
+            terminal: Terminal::new(CrosstermBackend::new(stdout))?,
+        })
     }
 }
 
-/// Run a sync with the live TUI front-end.
-pub fn run(plan: &SyncPlan, args: &Args, threads: usize) -> Result<()> {
-    let state = Arc::new(Mutex::new(TuiState::default()));
-    {
-        let mut s = state.lock().unwrap();
-        s.deletions = plan
-            .deletions
-            .iter()
-            .map(|d| d.rel.display().to_string())
-            .collect();
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = self.terminal.show_cursor();
     }
+}
 
-    // Spawn the sync worker.
-    let worker_done = Arc::new(AtomicBool::new(false));
-    let handle = spawn_worker(plan, args, threads, &state, &worker_done);
+#[derive(Default)]
+struct Ui {
+    tab: usize,
+    scroll: usize,
+    filter: String,
+    editing_filter: bool,
+    event_filter: usize,
+    help: bool,
+    cancel_confirm: bool,
+    delete_input: String,
+}
 
-    let result = render_loop(args, threads, &state, &worker_done);
+/// Open the TUI before planning and execute the complete run lifecycle.
+pub fn run(args: &Args, threads: usize, excludes: &GlobSet) -> Result<()> {
+    let state = Arc::new(Mutex::new(TuiState::default()));
+    let control = RunControl::default();
+    let approval = Approval::new();
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    spawn_worker(
+        args.clone(),
+        threads,
+        excludes.clone(),
+        Arc::clone(&state),
+        control.clone(),
+        approval.clone(),
+        result_tx,
+    );
 
-    // The worker owns no terminal state; join it so temp files are cleaned up.
-    let _ = handle.join();
-    result
+    let mut terminal = TerminalGuard::enter()?;
+    let mut ui = Ui::default();
+    let no_color = std::env::var_os("NO_COLOR").is_some();
+    let result = loop {
+        terminal
+            .terminal
+            .draw(|frame| draw(frame, args, threads, &state.lock().unwrap(), &ui, no_color))?;
+        if let Ok(result) = result_rx.try_recv() {
+            state.lock().unwrap().finished = true;
+            loop {
+                terminal.terminal.draw(|frame| {
+                    draw(frame, args, threads, &state.lock().unwrap(), &ui, no_color);
+                })?;
+                if event::poll(Duration::from_millis(100))? {
+                    if let CtEvent::Key(key) = event::read()? {
+                        if key.kind == KeyEventKind::Press
+                            && matches!(
+                                key.code,
+                                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter
+                            )
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            break result;
+        }
+        if event::poll(Duration::from_millis(50))? {
+            if let CtEvent::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    handle_key(key, &mut ui, &state, &control, &approval);
+                }
+            }
+        }
+    };
+    drop(terminal);
+    result.map_err(anyhow::Error::from)
 }
 
 fn spawn_worker(
-    plan: &SyncPlan,
-    args: &Args,
+    args: Args,
     threads: usize,
-    state: &Arc<Mutex<TuiState>>,
-    done: &Arc<AtomicBool>,
-) -> std::thread::JoinHandle<Stats> {
-    let plan = plan.clone();
-    let src = args.src.clone();
-    let dst = args.dst.clone();
-    let opts = ApplyOptions {
-        dry_run: args.dry_run,
-        yes: args.yes,
-        delete: args.delete,
-        threads,
-        reflink: args.reflink.into(),
-        fsync: args.fsync.into(),
-        backend: args.backend.into(),
-        metadata: MetadataOptions {
-            hard_links: args.hard_links,
-            sparse: args.sparse,
-            xattrs: args.xattrs,
-            acls: args.acls,
-            owner: args.owner,
-            group: args.group,
-        },
-    };
-    let state = Arc::clone(state);
-    let done = Arc::clone(done);
-    let index = args.index;
-    let checksum = args.checksum;
-    let dry_run = args.dry_run;
-    let deletes_complete = !args.delete || args.yes || plan.deletions.is_empty();
+    excludes: GlobSet,
+    state: Arc<Mutex<TuiState>>,
+    control: RunControl,
+    approval: Approval,
+    result: mpsc::SyncSender<ferry_core::Result<()>>,
+) {
     std::thread::spawn(move || {
         let reporter = TuiReporter {
             state: Arc::clone(&state),
         };
-        let stats = apply_plan(&plan, &src, &dst, opts, &reporter).unwrap_or_default();
-        if index && !dry_run && stats.errors == 0 && deletes_complete {
-            let _ = Manifest::from_destination(&plan, &dst, checksum)
-                .and_then(|manifest| manifest.save(&dst));
-        }
-        state.lock().unwrap().finished = true;
-        done.store(true, Ordering::SeqCst);
-        stats
-    })
+        let outcome = run_worker(
+            &args, threads, &excludes, &state, &control, &approval, &reporter,
+        );
+        let status = match outcome {
+            Ok(()) => RunStatus::Success,
+            Err(Error::Cancelled) => RunStatus::Cancelled,
+            Err(_) => RunStatus::Failed,
+        };
+        reporter.event(Event::Finished { status });
+        let _ = result.send(outcome);
+    });
 }
 
-fn render_loop(
+fn run_worker<R: Reporter>(
     args: &Args,
     threads: usize,
+    excludes: &GlobSet,
     state: &Arc<Mutex<TuiState>>,
-    done: &Arc<AtomicBool>,
-) -> Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let header = build_header(args, threads);
-    let start = Instant::now();
-    let mut last_bytes = 0u64;
-    let mut last_tick = Instant::now();
-    let mut scroll: u16 = 0;
-    let mut paused = false;
-
-    loop {
-        // Sample throughput once per tick (~200ms).
-        if last_tick.elapsed() >= Duration::from_millis(200) {
-            let mut s = state.lock().unwrap();
-            let now_bytes = s.bytes_done;
-            let dt = last_tick.elapsed().as_secs_f64().max(0.001);
-            #[allow(
-                clippy::cast_precision_loss,
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss
-            )]
-            let bps = ((now_bytes.saturating_sub(last_bytes)) as f64 / dt) as u64;
-            if !paused {
-                if s.spark.len() == SPARK_CAP {
-                    s.spark.pop_front();
-                }
-                s.spark.push_back(bps);
-            }
-            drop(s);
-            last_bytes = now_bytes;
-            last_tick = Instant::now();
-        }
-
-        terminal.draw(|f| {
-            let s = state.lock().unwrap();
-            draw(f, &header, &s, start, paused);
-        })?;
-
-        if event::poll(Duration::from_millis(50))? {
-            if let CtEvent::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Press {
-                    match k.code {
-                        KeyCode::Char('q') => break,
-                        KeyCode::Char('p') => paused = !paused,
-                        KeyCode::Up => scroll = scroll.saturating_sub(1),
-                        KeyCode::Down => scroll = scroll.saturating_add(1),
-                        _ => {}
-                    }
-                }
-            }
-        }
-        let _ = scroll; // scroll currently drives the (auto-tailing) log view
-
-        if done.load(Ordering::SeqCst) {
-            // One last draw, then wait for the user to quit.
-            terminal.draw(|f| {
-                let s = state.lock().unwrap();
-                draw(f, &header, &s, start, paused);
-            })?;
-            wait_for_quit()?;
-            break;
+    control: &RunControl,
+    approval: &Approval,
+    reporter: &R,
+) -> ferry_core::Result<()> {
+    let plan = build_plan_controlled(
+        &args.src,
+        &args.dst,
+        PlanOptions {
+            checksum: args.checksum,
+            delete: args.delete,
+            threads,
+            index: args.index,
+            hard_links: args.hard_links,
+        },
+        excludes,
+        control,
+        reporter,
+    )?;
+    state.lock().unwrap().deletions = plan
+        .deletions
+        .iter()
+        .map(|deletion| deletion.rel.display().to_string())
+        .collect();
+    let mut yes = args.yes;
+    if args.delete && !args.yes && !args.dry_run && !plan.deletions.is_empty() {
+        reporter.event(Event::Phase(RunPhase::Review));
+        yes = approval.wait(control)?;
+        if !yes {
+            return Err(Error::Cancelled);
         }
     }
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    let metadata = MetadataOptions {
+        hard_links: args.hard_links,
+        sparse: args.sparse,
+        xattrs: args.xattrs,
+        acls: args.acls,
+        owner: args.owner,
+        group: args.group,
+    };
+    let stats = apply_plan_controlled(
+        &plan,
+        &args.src,
+        &args.dst,
+        ApplyOptions {
+            dry_run: args.dry_run,
+            yes,
+            delete: args.delete,
+            threads,
+            reflink: args.reflink.into(),
+            fsync: args.fsync.into(),
+            backend: args.backend.into(),
+            metadata,
+        },
+        reporter,
+        control,
+    )?;
+    let verification = if args.dry_run || stats.errors > 0 {
+        VerificationSummary::default()
+    } else {
+        verify(
+            &plan,
+            &args.src,
+            &args.dst,
+            args.verify.into(),
+            metadata,
+            threads,
+            control,
+            reporter,
+        )?
+    };
+    if stats.errors > 0 {
+        return Err(Error::Verification(stats.errors as usize));
+    }
+    if !verification.mismatches.is_empty() {
+        return Err(Error::Verification(verification.mismatches.len()));
+    }
+    if args.index && !args.dry_run {
+        reporter.event(Event::Phase(RunPhase::Finalizing));
+        control.checkpoint()?;
+        Manifest::persist_after_plan(&plan, &args.dst, args.checksum)?;
+    }
+    reporter.event(Event::Phase(RunPhase::Done));
     Ok(())
 }
 
-/// Block until the user presses `q` (or Esc) after the sync finishes.
-fn wait_for_quit() -> Result<()> {
-    loop {
-        if event::poll(Duration::from_millis(150))? {
-            if let CtEvent::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Press
-                    && matches!(k.code, KeyCode::Char('q') | KeyCode::Esc)
-                {
-                    return Ok(());
-                }
+fn handle_key(
+    key: KeyEvent,
+    ui: &mut Ui,
+    state: &Arc<Mutex<TuiState>>,
+    control: &RunControl,
+    approval: &Approval,
+) {
+    if ui.editing_filter {
+        match key.code {
+            KeyCode::Esc => {
+                ui.editing_filter = false;
+                ui.filter.clear();
+            }
+            KeyCode::Enter => ui.editing_filter = false,
+            KeyCode::Backspace => {
+                ui.filter.pop();
+            }
+            KeyCode::Char(ch) => ui.filter.push(ch),
+            _ => {}
+        }
+        return;
+    }
+    if ui.cancel_confirm {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Enter => control.cancel(),
+            KeyCode::Char('n') | KeyCode::Esc => ui.cancel_confirm = false,
+            _ => {}
+        }
+        return;
+    }
+    if state.lock().unwrap().phase == RunPhase::Review {
+        match key.code {
+            KeyCode::Esc => approval.decide(false),
+            KeyCode::Backspace => {
+                ui.delete_input.pop();
+            }
+            KeyCode::Enter if ui.delete_input == "DELETE" => approval.decide(true),
+            KeyCode::Char(ch) => ui.delete_input.push(ch),
+            _ => {}
+        }
+        return;
+    }
+    match key.code {
+        KeyCode::Tab => ui.tab = (ui.tab + 1) % 4,
+        KeyCode::Char(ch @ '1'..='4') => ui.tab = ch as usize - '1' as usize,
+        KeyCode::Char('p') => {
+            if control.is_paused() {
+                control.resume();
+            } else {
+                control.pause();
             }
         }
+        KeyCode::Char('q') => ui.cancel_confirm = true,
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            ui.cancel_confirm = true;
+        }
+        KeyCode::Char('/') => ui.editing_filter = true,
+        KeyCode::Char('f') => ui.event_filter = (ui.event_filter + 1) % 5,
+        KeyCode::Char('?') => ui.help = !ui.help,
+        KeyCode::Esc => {
+            ui.help = false;
+            ui.filter.clear();
+        }
+        KeyCode::Down | KeyCode::Char('j') => ui.scroll = ui.scroll.saturating_add(1),
+        KeyCode::Up | KeyCode::Char('k') => ui.scroll = ui.scroll.saturating_sub(1),
+        KeyCode::PageDown => ui.scroll = ui.scroll.saturating_add(10),
+        KeyCode::PageUp => ui.scroll = ui.scroll.saturating_sub(10),
+        KeyCode::Home => ui.scroll = 0,
+        KeyCode::End => ui.scroll = usize::MAX / 2,
+        _ => {}
     }
 }
 
-fn build_header(args: &Args, threads: usize) -> String {
-    let mut flags = Vec::new();
-    if args.dry_run {
-        flags.push("dry-run");
-    }
-    if args.delete {
-        flags.push("delete");
-    }
-    if args.checksum {
-        flags.push("checksum");
-    }
-    if args.delta {
-        flags.push("delta");
-    }
-    let flag_str = if flags.is_empty() {
-        "size+mtime".to_string()
+fn draw(
+    frame: &mut ratatui::Frame,
+    args: &Args,
+    threads: usize,
+    state: &TuiState,
+    ui: &Ui,
+    no_color: bool,
+) {
+    let area = frame.area();
+    let compact = area.height < 24 || area.width < 80;
+    let rows = if compact {
+        vec![
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Min(4),
+            Constraint::Length(1),
+        ]
     } else {
-        flags.join(",")
+        vec![
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Min(8),
+            Constraint::Length(1),
+        ]
     };
-    format!(
-        "{}  →  {}    [{}]  j={threads}",
-        args.src.display(),
-        args.dst.display(),
-        flag_str
-    )
-}
-
-#[allow(clippy::cast_precision_loss)]
-fn mb(bytes: u64) -> f64 {
-    bytes as f64 / (1024.0 * 1024.0)
-}
-
-#[allow(clippy::too_many_lines)]
-fn draw(f: &mut ratatui::Frame, header: &str, s: &TuiState, start: Instant, paused: bool) {
-    let has_del = !s.deletions.is_empty();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // header
-            Constraint::Length(3), // overall gauge
-            Constraint::Length(2), // stats line
-            Constraint::Length(5), // sparkline
-            Constraint::Min(6),    // middle (active + delete)
-            Constraint::Min(5),    // log
-            Constraint::Length(1), // footer
-        ])
-        .split(f.area());
-
-    // Header.
-    f.render_widget(
-        Paragraph::new(header).block(Block::default().borders(Borders::ALL).title("Ferry 🛶")),
+        .constraints(rows)
+        .split(area);
+    let color = |wanted| if no_color { Color::Reset } else { wanted };
+    let options = format!(
+        "phase={} backend={} verify={:?} j={}{}{}",
+        phase_word(state.phase),
+        state.backend,
+        args.verify,
+        threads,
+        if args.delete { " delete" } else { "" },
+        if args.dry_run { " dry-run" } else { "" }
+    );
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{} -> {}\n{}",
+            args.src.display(),
+            args.dst.display(),
+            options
+        ))
+        .block(Block::default().borders(Borders::ALL).title("Ferry 0.3")),
         chunks[0],
     );
-
-    // Overall progress gauge (by bytes, falling back to files when no bytes).
-    let ratio = if s.total_bytes > 0 {
-        #[allow(clippy::cast_precision_loss)]
-        {
-            (s.bytes_done as f64 / s.total_bytes as f64).clamp(0.0, 1.0)
-        }
-    } else if s.total_files > 0 {
-        #[allow(clippy::cast_precision_loss)]
-        {
-            (s.files_done as f64 / s.total_files as f64).clamp(0.0, 1.0)
-        }
-    } else {
-        f64::from(u8::from(s.finished))
-    };
-    let pct = (ratio * 100.0) as u16;
-    f.render_widget(
+    let entry_ratio = ratio(state.files_done, state.total_files as u64);
+    frame.render_widget(
         Gauge::default()
-            .block(Block::default().borders(Borders::ALL).title("Overall"))
-            .gauge_style(Style::default().fg(Color::Cyan))
-            .percent(pct.min(100)),
+            .block(Block::default().borders(Borders::ALL).title("Entries"))
+            .ratio(entry_ratio)
+            .gauge_style(Style::default().fg(color(Color::Cyan))),
         chunks[1],
     );
-
-    // Stats line: bytes, throughput, ETA, files/sec.
-    let elapsed = start.elapsed().as_secs_f64().max(0.001);
-    #[allow(clippy::cast_precision_loss)]
-    let mbps = mb(s.bytes_done) / elapsed;
-    #[allow(clippy::cast_precision_loss)]
-    let fps = s.files_done as f64 / elapsed;
-    let remaining = s.total_bytes.saturating_sub(s.bytes_done);
-    let eta = if mbps > 0.01 {
-        format!("{:.0}s", mb(remaining) / mbps)
-    } else {
-        "—".into()
-    };
-    let stats = format!(
-        "{:.1}/{:.1} MB   {mbps:.1} MB/s   ETA {eta}   {fps:.0} files/s   files {}/{}",
-        mb(s.bytes_done),
-        mb(s.total_bytes),
-        s.files_done,
-        s.total_files,
+    frame.render_widget(
+        Gauge::default()
+            .block(Block::default().borders(Borders::ALL).title("Bytes"))
+            .ratio(ratio(state.bytes_done, state.total_bytes))
+            .gauge_style(Style::default().fg(color(Color::Green))),
+        chunks[2],
     );
-    f.render_widget(Paragraph::new(stats), chunks[2]);
-
-    // Throughput sparkline.
-    let data: Vec<u64> = s.spark.iter().copied().collect();
-    let title = if paused {
-        "Throughput (paused)"
+    let elapsed = state.started.elapsed().as_secs_f64().max(0.001);
+    let throughput = state.bytes_done as f64 / elapsed;
+    let eta = if throughput > 0.0 {
+        format!(
+            "{:.1}s",
+            state.total_bytes.saturating_sub(state.bytes_done) as f64 / throughput
+        )
     } else {
-        "Throughput B/s"
+        "-".into()
     };
-    f.render_widget(
-        Sparkline::default()
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .data(&data)
-            .style(Style::default().fg(Color::Green)),
-        chunks[3],
+    let metrics = format!(
+        "{} / {} | {}/s | {:.0} files/s | elapsed {:.1}s | ETA {} | errors {} | planning {}",
+        size(state.bytes_done),
+        size(state.total_bytes),
+        size(throughput as u64),
+        state.files_done as f64 / elapsed,
+        elapsed,
+        eta,
+        state.errors + state.verify_errors as u64,
+        state.planning_entries
     );
+    let tab_row = if compact { 3 } else { 4 };
+    if !compact {
+        frame.render_widget(Paragraph::new(metrics), chunks[3]);
+    }
+    frame.render_widget(
+        Tabs::new(["Summary", "Activity", "Deletes", "Errors/Verify"])
+            .select(ui.tab)
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
+        chunks[tab_row],
+    );
+    let body = chunks[tab_row + 1];
+    draw_body(frame, body, state, ui, color);
+    let footer = if state.phase == RunPhase::Review {
+        format!(
+            "Type DELETE and Enter to approve; Esc cancels [{}]",
+            ui.delete_input
+        )
+    } else if ui.editing_filter {
+        format!("filter: {}", ui.filter)
+    } else if control_hint(state) {
+        "Done. q closes/cancels | ? keys".into()
+    } else {
+        "Tab/1-4 views | p pause | q/Ctrl-C cancel | / filter | f event filter | ? keys".into()
+    };
+    frame.render_widget(Paragraph::new(footer), *chunks.last().unwrap());
+    if ui.help {
+        overlay(
+            frame,
+            area,
+            "Keys",
+            "Tab/1-4 views\np pause/resume\nq or Ctrl-C cancel\nj/k/arrows/Page/Home/End navigate\n/ filter\nf event type\nEsc close/clear",
+        );
+    } else if ui.cancel_confirm {
+        overlay(
+            frame,
+            area,
+            "Cancel",
+            "Cancel gracefully? Enter/y confirms; Esc/n returns.",
+        );
+    }
+}
 
-    // Middle: active transfers (+ delete panel when present).
-    draw_middle(f, chunks[4], s, has_del);
-
-    // Event log (auto-tailing).
-    let height = chunks[5].height.saturating_sub(2) as usize;
-    let items: Vec<ListItem> = s
-        .log
-        .iter()
-        .rev()
-        .take(height)
-        .rev()
-        .map(|l| {
-            let style = if l.starts_with("ERROR") || l.starts_with("delete") {
-                Style::default().fg(Color::Red)
+fn draw_body(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    state: &TuiState,
+    ui: &Ui,
+    color: impl Fn(Color) -> Color,
+) {
+    match ui.tab {
+        0 => {
+            let text = format!(
+                "copied {}  updated {}  skipped {}  deleted {}\nverification {}/{} mismatches {}\nbackend reason: {}\nactive: {}",
+                state.copied,
+                state.updated,
+                state.skipped,
+                state.deleted,
+                state.verify_checked,
+                state.verify_total,
+                state.verify_errors,
+                state.backend_reason,
+                state.active.join(", ")
+            );
+            frame.render_widget(
+                Paragraph::new(text)
+                    .block(Block::default().borders(Borders::ALL))
+                    .wrap(Wrap { trim: true }),
+                area,
+            );
+        }
+        2 => draw_strings(
+            frame,
+            area,
+            "Deletes",
+            &state.deletions,
+            ui,
+            color(Color::Red),
+        ),
+        _ => {
+            let wanted = if ui.tab == 3 {
+                Some([LogKind::Error, LogKind::Verify].as_slice())
             } else {
-                Style::default()
+                None
             };
-            ListItem::new(Line::from(Span::styled(l.clone(), style)))
-        })
-        .collect();
-    f.render_widget(
-        List::new(items).block(Block::default().borders(Borders::ALL).title("Log")),
-        chunks[5],
-    );
+            let event_kind = match ui.event_filter {
+                1 => Some(LogKind::Activity),
+                2 => Some(LogKind::Delete),
+                3 => Some(LogKind::Error),
+                4 => Some(LogKind::Verify),
+                _ => None,
+            };
+            let lines: Vec<String> = state
+                .log
+                .iter()
+                .filter(|line| wanted.is_none_or(|kinds| kinds.contains(&line.kind)))
+                .filter(|line| event_kind.is_none_or(|kind| line.kind == kind))
+                .filter(|line| ui.filter.is_empty() || line.text.contains(&ui.filter))
+                .map(|line| line.text.clone())
+                .collect();
+            draw_strings(frame, area, "Events", &lines, ui, Color::Reset);
+        }
+    }
+}
 
-    // Footer.
-    let footer = if s.finished {
-        "DONE — q quit"
-    } else {
-        "q quit · p pause · ↑/↓ scroll"
-    };
-    f.render_widget(
-        Paragraph::new(footer).style(Style::default().add_modifier(Modifier::DIM)),
-        chunks[6],
+fn draw_strings(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    title: &str,
+    values: &[String],
+    ui: &Ui,
+    color: Color,
+) {
+    let height = area.height.saturating_sub(2) as usize;
+    let max_scroll = values.len().saturating_sub(height);
+    let scroll = ui.scroll.min(max_scroll);
+    let items = values
+        .iter()
+        .skip(scroll)
+        .take(height)
+        .map(|value| ListItem::new(value.as_str()).style(Style::default().fg(color)));
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("{title} ({})", values.len())),
+        ),
+        area,
     );
 }
 
-fn draw_middle(f: &mut ratatui::Frame, area: Rect, s: &TuiState, has_del: bool) {
-    let cols = if has_del {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(100)])
-            .split(area)
-    };
-
-    let active: Vec<ListItem> = s
-        .active
-        .iter()
-        .take(area.height.saturating_sub(2) as usize)
-        .map(|a| ListItem::new(format!("⇅ {a}")))
-        .collect();
-    f.render_widget(
-        List::new(active).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!("Active ({})", s.active.len())),
-        ),
-        cols[0],
+fn overlay(frame: &mut ratatui::Frame, area: Rect, title: &str, text: &str) {
+    let popup = centered(area, 60, 40);
+    frame.render_widget(ratatui::widgets::Clear, popup);
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .wrap(Wrap { trim: true }),
+        popup,
     );
+}
 
-    if has_del {
-        let dels: Vec<ListItem> = s
-            .deletions
-            .iter()
-            .take(area.height.saturating_sub(2) as usize)
-            .map(|d| {
-                ListItem::new(Span::styled(
-                    format!("- {d}"),
-                    Style::default().fg(Color::Red),
-                ))
-            })
-            .collect();
-        f.render_widget(
-            List::new(dels).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Red))
-                    .title(format!("TO DELETE ({})", s.deletions.len())),
-            ),
-            cols[1],
-        );
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let vertical = Layout::vertical([
+        Constraint::Percentage((100 - height) / 2),
+        Constraint::Percentage(height),
+        Constraint::Percentage((100 - height) / 2),
+    ])
+    .split(area);
+    Layout::horizontal([
+        Constraint::Percentage((100 - width) / 2),
+        Constraint::Percentage(width),
+        Constraint::Percentage((100 - width) / 2),
+    ])
+    .split(vertical[1])[1]
+}
+
+fn action_word(action: Action) -> &'static str {
+    match action {
+        Action::Copy => "copy",
+        Action::Update => "update",
+        Action::Skip => "skip",
+    }
+}
+
+fn phase_word(phase: RunPhase) -> &'static str {
+    match phase {
+        RunPhase::Planning => "planning",
+        RunPhase::Review => "review",
+        RunPhase::Copying => "copying",
+        RunPhase::Deleting => "deleting",
+        RunPhase::Verifying => "verifying",
+        RunPhase::Finalizing => "finalizing",
+        RunPhase::Done => "done",
+        RunPhase::Cancelled => "cancelled",
+        RunPhase::Failed => "failed",
+    }
+}
+
+fn ratio(done: u64, total: u64) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        (done as f64 / total as f64).clamp(0.0, 1.0)
+    }
+}
+
+fn size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.1} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn control_hint(state: &TuiState) -> bool {
+    state.finished
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::{TuiState, Ui, draw};
+    use crate::args::Args;
+
+    #[test]
+    fn renders_lifecycle_states_at_supported_sizes() {
+        let args = Args::parse_from(["ferry", "src", "dst", "--verify", "changed"]);
+        for (width, height) in [(60, 18), (100, 30), (160, 45)] {
+            for phase in [
+                ferry_core::RunPhase::Planning,
+                ferry_core::RunPhase::Review,
+                ferry_core::RunPhase::Copying,
+                ferry_core::RunPhase::Deleting,
+                ferry_core::RunPhase::Verifying,
+                ferry_core::RunPhase::Finalizing,
+                ferry_core::RunPhase::Done,
+                ferry_core::RunPhase::Cancelled,
+                ferry_core::RunPhase::Failed,
+            ] {
+                let state = TuiState {
+                    phase,
+                    total_files: 10,
+                    files_done: 4,
+                    total_bytes: 1000,
+                    bytes_done: 400,
+                    deletions: vec!["old/file".into()],
+                    ..TuiState::default()
+                };
+                let ui = Ui {
+                    tab: phase as usize % 4,
+                    help: phase == ferry_core::RunPhase::Planning,
+                    cancel_confirm: phase == ferry_core::RunPhase::Cancelled,
+                    ..Ui::default()
+                };
+                let backend = TestBackend::new(width, height);
+                let mut terminal = Terminal::new(backend).unwrap();
+                terminal
+                    .draw(|frame| draw(frame, &args, 4, &state, &ui, false))
+                    .unwrap();
+            }
+        }
     }
 }

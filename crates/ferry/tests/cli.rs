@@ -77,7 +77,10 @@ fn delete_without_yes_deletes_nothing() {
             "--delete",
         ])
         .assert()
-        .success();
+        .failure()
+        .stderr(predicates::str::contains(
+            "--delete requires --yes in noninteractive mode",
+        ));
 
     assert!(
         dst.join("stale.txt").exists(),
@@ -188,6 +191,54 @@ fn json_output_is_valid() {
 
     let parsed: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
     assert_eq!(parsed["summary"]["copied"], 1);
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["backend"]["selected"], "portable");
+    assert!(parsed["phase_timings_ms"].is_object());
+}
+
+#[test]
+fn unsupported_placeholder_flags_fail_immediately() {
+    ferry()
+        .args(["src", "dst", "--bwlimit", "1M"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("--bwlimit is not supported"));
+    ferry()
+        .args(["src", "dst", "--partial"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("--partial is not supported"));
+}
+
+#[test]
+fn verify_changed_succeeds_and_all_detects_extra_entries() {
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    write(&src.join("data"), "content");
+    ferry()
+        .args([
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "--no-tui",
+            "--verify",
+            "changed",
+        ])
+        .assert()
+        .success();
+
+    write(&dst.join("extra"), "not in source");
+    ferry()
+        .args([
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "--no-tui",
+            "--verify",
+            "all",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("verification failed"));
 }
 
 #[test]

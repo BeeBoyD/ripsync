@@ -3,9 +3,11 @@
 
 use std::io::Write;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use ferry_core::plan::{Action, SyncPlan};
-use ferry_core::report::{Event, Reporter, Stats};
+use ferry_core::report::{Event, Reporter, RunPhase, RunStatus, Stats};
+use ferry_core::verify::VerificationSummary;
 
 use crate::args::OutputFormat;
 
@@ -19,6 +21,15 @@ pub struct CliReporter {
     lock: Mutex<()>,
     /// Accumulated per-entry records for the JSON report.
     json: Mutex<Vec<serde_json::Value>>,
+    lifecycle: Mutex<Lifecycle>,
+}
+
+struct Lifecycle {
+    phase: RunPhase,
+    phase_started: Instant,
+    timings: serde_json::Map<String, serde_json::Value>,
+    backend: Option<String>,
+    backend_reason: Option<String>,
 }
 
 impl CliReporter {
@@ -32,6 +43,13 @@ impl CliReporter {
             dry_run,
             lock: Mutex::new(()),
             json: Mutex::new(Vec::new()),
+            lifecycle: Mutex::new(Lifecycle {
+                phase: RunPhase::Planning,
+                phase_started: Instant::now(),
+                timings: serde_json::Map::new(),
+                backend: None,
+                backend_reason: None,
+            }),
         }
     }
 
@@ -85,10 +103,17 @@ impl CliReporter {
     }
 
     /// Emit the final report (human summary or JSON document).
-    pub fn finish(&self, stats: &Stats, src: &str, dst: &str) {
+    pub fn finish(
+        &self,
+        stats: &Stats,
+        src: &str,
+        dst: &str,
+        status: RunStatus,
+        verification: &VerificationSummary,
+    ) {
         match self.format {
             OutputFormat::Human => self.finish_human(stats),
-            OutputFormat::Json => self.finish_json(stats, src, dst),
+            OutputFormat::Json => self.finish_json(stats, src, dst, status, verification),
         }
     }
 
@@ -111,12 +136,34 @@ impl CliReporter {
         );
     }
 
-    fn finish_json(&self, s: &Stats, src: &str, dst: &str) {
+    fn finish_json(
+        &self,
+        s: &Stats,
+        src: &str,
+        dst: &str,
+        status: RunStatus,
+        verification: &VerificationSummary,
+    ) {
         let events = self.json.lock().unwrap().clone();
+        let lifecycle = self.lifecycle.lock().unwrap();
         let report = serde_json::json!({
             "src": src,
             "dst": dst,
             "dry_run": self.dry_run,
+            "status": status_word(status),
+            "cancelled": status == RunStatus::Cancelled,
+            "phase_timings_ms": lifecycle.timings,
+            "backend": {
+                "selected": lifecycle.backend,
+                "reason": lifecycle.backend_reason,
+            },
+            "verification": {
+                "checked": verification.checked,
+                "mismatches": verification.mismatches.iter().map(|m| serde_json::json!({
+                    "path": m.rel,
+                    "detail": m.detail,
+                })).collect::<Vec<_>>(),
+            },
             "summary": {
                 "copied": s.copied,
                 "updated": s.updated,
@@ -140,7 +187,25 @@ impl Reporter for CliReporter {
     fn event(&self, ev: Event) {
         let json = self.format == OutputFormat::Json;
         match ev {
-            Event::Planned { .. } | Event::FileStart { .. } => {}
+            Event::Phase(phase) => {
+                let mut lifecycle = self.lifecycle.lock().unwrap();
+                let elapsed = u64::try_from(lifecycle.phase_started.elapsed().as_millis())
+                    .unwrap_or(u64::MAX);
+                let previous = phase_word(lifecycle.phase).to_string();
+                lifecycle.timings.insert(previous, elapsed.into());
+                lifecycle.phase = phase;
+                lifecycle.phase_started = Instant::now();
+            }
+            Event::BackendSelected { backend, reason } => {
+                let mut lifecycle = self.lifecycle.lock().unwrap();
+                lifecycle.backend = Some(backend.into());
+                lifecycle.backend_reason = Some(reason.into());
+            }
+            Event::Planned { .. }
+            | Event::PlanningProgress { .. }
+            | Event::FileStart { .. }
+            | Event::VerificationProgress { .. }
+            | Event::Finished { .. } => {}
             Event::FileDone { rel, action, bytes } => {
                 if json {
                     self.record(
@@ -205,6 +270,40 @@ impl Reporter for CliReporter {
                     let _ = writeln!(err, "\x1b[31merror\x1b[0m  {}: {error}", rel.display());
                 }
             }
+            Event::VerificationFailed { rel, detail } => {
+                if json {
+                    self.record(
+                        "verification_error",
+                        &rel.display().to_string(),
+                        serde_json::json!({ "detail": detail }),
+                    );
+                } else {
+                    let _g = self.lock.lock().unwrap();
+                    eprintln!("verify  {}: {detail}", rel.display());
+                }
+            }
         }
+    }
+}
+
+fn phase_word(phase: RunPhase) -> &'static str {
+    match phase {
+        RunPhase::Planning => "planning",
+        RunPhase::Review => "review",
+        RunPhase::Copying => "copying",
+        RunPhase::Deleting => "deleting",
+        RunPhase::Verifying => "verifying",
+        RunPhase::Finalizing => "finalizing",
+        RunPhase::Done => "done",
+        RunPhase::Cancelled => "cancelled",
+        RunPhase::Failed => "failed",
+    }
+}
+
+fn status_word(status: RunStatus) -> &'static str {
+    match status {
+        RunStatus::Success => "success",
+        RunStatus::Cancelled => "cancelled",
+        RunStatus::Failed => "failed",
     }
 }

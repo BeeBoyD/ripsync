@@ -4,14 +4,14 @@
 //! its root. Symlinks are recorded as symlinks (their target is read but never
 //! followed), which keeps the walk safe and cheap.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use filetime::FileTime;
 use globset::GlobSet;
+use rayon::prelude::*;
 
 use crate::meta::{FileTypeKind, meta_min};
-use crate::{Error, Result};
+use crate::{Error, Result, RunControl};
 
 /// What a walked entry is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +72,20 @@ impl Entry {
 /// Returns an error if `root` cannot be read, or if any entry's metadata cannot
 /// be stat-ed.
 pub fn walk(root: &Path, threads: usize, excludes: &GlobSet) -> Result<Vec<Entry>> {
+    walk_controlled(root, threads, excludes, &RunControl::default())
+}
+
+/// Walk a tree with a cooperative checkpoint before processing each entry.
+///
+/// # Errors
+///
+/// Returns an I/O, containment, metadata, or cancellation error.
+pub fn walk_controlled(
+    root: &Path,
+    threads: usize,
+    excludes: &GlobSet,
+    control: &RunControl,
+) -> Result<Vec<Entry>> {
     let parallelism = if threads == 0 {
         jwalk::Parallelism::RayonDefaultPool {
             busy_timeout: std::time::Duration::from_secs(1),
@@ -80,14 +94,14 @@ pub fn walk(root: &Path, threads: usize, excludes: &GlobSet) -> Result<Vec<Entry
         jwalk::Parallelism::RayonNewPool(threads)
     };
 
-    // Collect into a map keyed by rel path to get a deterministic sorted order.
-    let mut map: BTreeMap<PathBuf, Entry> = BTreeMap::new();
+    let mut entries = Vec::new();
 
     for dent in jwalk::WalkDir::new(root)
         .parallelism(parallelism)
         .skip_hidden(false)
         .follow_links(false)
     {
+        control.checkpoint()?;
         let dent = dent.map_err(|e| Error::io(root, std::io::Error::other(e.to_string())))?;
         let path = dent.path();
         if path == root {
@@ -120,21 +134,19 @@ pub fn walk(root: &Path, threads: usize, excludes: &GlobSet) -> Result<Vec<Entry
             0
         };
 
-        map.insert(
-            rel.clone(),
-            Entry {
-                rel,
-                kind,
-                len,
-                mtime: m.mtime,
-                mode: m.mode,
-                ino: m.ino,
-                dev: m.dev,
-                uid: m.uid,
-                gid: m.gid,
-            },
-        );
+        entries.push(Entry {
+            rel,
+            kind,
+            len,
+            mtime: m.mtime,
+            mode: m.mode,
+            ino: m.ino,
+            dev: m.dev,
+            uid: m.uid,
+            gid: m.gid,
+        });
     }
 
-    Ok(map.into_values().collect())
+    entries.par_sort_unstable_by(|a, b| a.rel.cmp(&b.rel));
+    Ok(entries)
 }

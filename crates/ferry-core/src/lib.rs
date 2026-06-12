@@ -16,6 +16,7 @@
 
 pub mod apply;
 pub mod checksum;
+pub mod control;
 pub mod copy;
 pub mod delta;
 pub mod error;
@@ -24,7 +25,9 @@ pub mod io;
 pub mod meta;
 pub mod plan;
 pub mod report;
+pub mod verify;
 pub mod walk;
 
+pub use control::RunControl;
 pub use error::{Error, Result};
-pub use report::{Event, Reporter, Stats};
+pub use report::{Event, Reporter, RunPhase, RunStatus, Stats};

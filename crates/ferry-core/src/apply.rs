@@ -13,20 +13,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rayon::prelude::*;
 
+use crate::control::RunControl;
 use crate::copy::{FsyncMode, ReflinkMode, copy_file_into};
 use crate::meta::{
     canonical_root, check_relative, contained_target, copy_xattrs, set_mode, set_mtime,
     set_owner_group, set_symlink_mtime,
 };
 use crate::plan::{Action, SyncPlan};
-use crate::report::{Event, Reporter, Stats};
+use crate::report::{Event, Reporter, RunPhase, Stats};
 use crate::walk::{Entry, EntryKind};
 use crate::{Error, Result};
 
 /// Which file-copy backend to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Backend {
-    /// `io_uring` on Linux when available, else portable.
+    /// Portable backend (conservative default).
     #[default]
     Auto,
     /// Force the `io_uring` batched backend (Linux).
@@ -122,6 +123,24 @@ pub fn apply_plan<R: Reporter>(
     opts: ApplyOptions,
     reporter: &R,
 ) -> Result<Stats> {
+    apply_plan_controlled(plan, src, dst, opts, reporter, &RunControl::default())
+}
+
+/// Apply a plan with cooperative pause and cancellation.
+///
+/// # Errors
+///
+/// Returns setup, containment, or cancellation errors. Per-entry operation
+/// failures continue to be counted in the returned statistics.
+pub fn apply_plan_controlled<R: Reporter>(
+    plan: &SyncPlan,
+    src: &Path,
+    dst: &Path,
+    opts: ApplyOptions,
+    reporter: &R,
+    control: &RunControl,
+) -> Result<Stats> {
+    control.checkpoint()?;
     reporter.event(Event::Planned {
         total_files: plan
             .actions
@@ -136,6 +155,7 @@ pub fn apply_plan<R: Reporter>(
 
     if opts.dry_run {
         for pa in &plan.actions {
+            control.checkpoint()?;
             emit_planned_event(reporter, &pa.entry, pa.action);
             counters.bump_action(pa.action);
             if pa.action != Action::Skip && pa.entry.is_file() {
@@ -143,6 +163,7 @@ pub fn apply_plan<R: Reporter>(
             }
         }
         for del in &plan.deletions {
+            control.checkpoint()?;
             reporter.event(Event::Deleted {
                 rel: del.rel.clone(),
             });
@@ -151,7 +172,7 @@ pub fn apply_plan<R: Reporter>(
         return Ok(counters.snapshot());
     }
 
-    apply_real(plan, src, dst, opts, reporter, &counters)?;
+    apply_real(plan, src, dst, opts, reporter, &counters, control)?;
     Ok(counters.snapshot())
 }
 
@@ -163,7 +184,12 @@ fn apply_real<R: Reporter>(
     opts: ApplyOptions,
     reporter: &R,
     counters: &Counters,
+    control: &RunControl,
 ) -> Result<()> {
+    reporter.event(Event::Phase(RunPhase::Copying));
+    control.checkpoint()?;
+    let (backend, reason) = selected_backend(opts);
+    reporter.event(Event::BackendSelected { backend, reason });
     let root_canon = canonical_root(dst)?;
 
     // Partition work by kind. Directories are batched by depth, files run in
@@ -213,24 +239,38 @@ fn apply_real<R: Reporter>(
     let pool = build_pool(opts.threads);
 
     // 1. Directories, parent-depth batches. Peers at one depth are independent.
-    let run_dirs = || create_directories(&dirs, src, dst, &root_canon, opts, reporter, counters);
+    control.checkpoint()?;
+    let run_dirs = || {
+        create_directories(
+            &dirs,
+            src,
+            dst,
+            &root_canon,
+            opts,
+            reporter,
+            counters,
+            control,
+        )
+    };
     match &pool {
-        Some(thread_pool) => thread_pool.install(run_dirs),
-        None => run_dirs(),
+        Some(thread_pool) => thread_pool.install(run_dirs)?,
+        None => run_dirs()?,
     }
 
     // 2. Files.
-    let run_files = || copy_files(&files, src, &root_canon, opts, reporter, counters);
+    control.checkpoint()?;
+    let run_files = || copy_files(&files, src, &root_canon, opts, reporter, counters, control);
     match &pool {
-        Some(p) => p.install(run_files),
-        None => run_files(),
+        Some(p) => p.install(run_files)?,
+        None => run_files()?,
     }
 
     // 3. Duplicate hardlinks after their canonical files exist.
-    copy_hardlinks(&hardlinks, &root_canon, reporter, counters);
+    copy_hardlinks(&hardlinks, &root_canon, reporter, counters, control)?;
 
     // 4. Symlinks, sequentially.
     for (entry, action) in &symlinks {
+        control.checkpoint()?;
         if let EntryKind::Symlink(link_target) = &entry.kind {
             match create_symlink(src, &root_canon, entry, link_target, opts) {
                 Ok(()) => {
@@ -247,24 +287,29 @@ fn apply_real<R: Reporter>(
 
     // 5. Directory mtimes last (deepest first) — children writes bump parent times.
     for entry in mtime_dirs.iter().rev() {
+        control.checkpoint()?;
         let target = root_canon.join(&entry.rel);
         let _ = set_mtime(&target, entry.mtime);
     }
 
     // 6. Guarded deletions (deepest first).
     if opts.delete && opts.yes {
-        run_deletions(plan, &root_canon, reporter, counters);
+        reporter.event(Event::Phase(RunPhase::Deleting));
+        run_deletions(plan, &root_canon, reporter, counters, control)?;
     }
 
     // 7. Batched directory fsync for rename durability (auto mode). `always`
     // already fsynced each file; `never` skips even this.
     if opts.fsync == FsyncMode::Auto {
+        control.checkpoint()?;
         fsync_touched_dirs(&root_canon, &dirs, &files);
     }
 
+    control.checkpoint()?;
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_directories<R: Reporter>(
     dirs: &[&Entry],
     src: &Path,
@@ -273,9 +318,11 @@ fn create_directories<R: Reporter>(
     opts: ApplyOptions,
     reporter: &R,
     counters: &Counters,
-) {
+    control: &RunControl,
+) -> Result<()> {
     let mut start = 0;
     while start < dirs.len() {
+        control.checkpoint()?;
         let depth = dirs[start].rel.components().count();
         let end = dirs[start..]
             .iter()
@@ -284,8 +331,10 @@ fn create_directories<R: Reporter>(
         dirs[start..end].par_iter().for_each(|entry| {
             create_directory(entry, src, dst, root_canon, opts, reporter, counters);
         });
+        control.checkpoint()?;
         start = end;
     }
+    Ok(())
 }
 
 fn create_directory<R: Reporter>(
@@ -370,8 +419,10 @@ fn run_deletions<R: Reporter>(
     root_canon: &Path,
     reporter: &R,
     counters: &Counters,
-) {
+    control: &RunControl,
+) -> Result<()> {
     for del in &plan.deletions {
+        control.checkpoint()?;
         match delete_entry(root_canon, &del.rel, del.is_dir) {
             Ok(()) => {
                 reporter.event(Event::Deleted {
@@ -382,6 +433,7 @@ fn run_deletions<R: Reporter>(
             Err(e) => report_fail(reporter, counters, &del.rel, &e),
         }
     }
+    Ok(())
 }
 
 fn build_pool(threads: usize) -> Option<rayon::ThreadPool> {
@@ -518,15 +570,18 @@ fn copy_files<R: Reporter>(
     opts: ApplyOptions,
     reporter: &R,
     counters: &Counters,
-) {
+    control: &RunControl,
+) -> Result<()> {
     #[cfg(all(target_os = "linux", feature = "io-uring"))]
     {
-        if opts.backend != Backend::Portable && !opts.metadata.sparse {
+        if opts.backend == Backend::Uring && !opts.metadata.sparse {
+            control.checkpoint()?;
             copy_files_uring(files, src, root_canon, opts, reporter, counters);
-            return;
+            control.checkpoint()?;
+            return Ok(());
         }
     }
-    copy_files_portable(files, src, root_canon, opts, reporter, counters);
+    copy_files_portable(files, src, root_canon, opts, reporter, counters, control)
 }
 
 /// Portable backend: one atomic copy per file across the rayon pool.
@@ -537,25 +592,32 @@ fn copy_files_portable<R: Reporter>(
     opts: ApplyOptions,
     reporter: &R,
     counters: &Counters,
-) {
-    files.par_iter().for_each(|(entry, action)| {
-        reporter.event(Event::FileStart {
-            rel: entry.rel.clone(),
-            len: entry.len,
-        });
-        match copy_file_atomic(src, root_canon, entry, opts) {
-            Ok(bytes) => {
-                counters.bytes.fetch_add(bytes, Ordering::Relaxed);
-                counters.bump_action(*action);
-                reporter.event(Event::FileDone {
-                    rel: entry.rel.clone(),
-                    action: *action,
-                    bytes,
-                });
+    control: &RunControl,
+) -> Result<()> {
+    let chunk_size = opts.threads.max(1).saturating_mul(2);
+    for chunk in files.chunks(chunk_size) {
+        control.checkpoint()?;
+        chunk.par_iter().for_each(|(entry, action)| {
+            reporter.event(Event::FileStart {
+                rel: entry.rel.clone(),
+                len: entry.len,
+            });
+            match copy_file_atomic(src, root_canon, entry, opts) {
+                Ok(bytes) => {
+                    counters.bytes.fetch_add(bytes, Ordering::Relaxed);
+                    counters.bump_action(*action);
+                    reporter.event(Event::FileDone {
+                        rel: entry.rel.clone(),
+                        action: *action,
+                        bytes,
+                    });
+                }
+                Err(e) => report_fail(reporter, counters, &entry.rel, &e),
             }
-            Err(e) => report_fail(reporter, counters, &entry.rel, &e),
-        }
-    });
+        });
+        control.checkpoint()?;
+    }
+    Ok(())
 }
 
 /// `io_uring` backend: batch the data copy through one ring, then finalize each
@@ -641,8 +703,10 @@ fn copy_hardlinks<R: Reporter>(
     root_canon: &Path,
     reporter: &R,
     counters: &Counters,
-) {
+    control: &RunControl,
+) -> Result<()> {
     for (entry, action, canonical) in hardlinks {
+        control.checkpoint()?;
         reporter.event(Event::FileStart {
             rel: entry.rel.clone(),
             len: entry.len,
@@ -658,6 +722,18 @@ fn copy_hardlinks<R: Reporter>(
             }
             Err(error) => report_fail(reporter, counters, &entry.rel, &error),
         }
+    }
+    Ok(())
+}
+
+fn selected_backend(opts: ApplyOptions) -> (&'static str, &'static str) {
+    match opts.backend {
+        Backend::Auto => ("portable", "auto is portable-first"),
+        Backend::Portable => ("portable", "explicitly requested"),
+        Backend::Uring if opts.metadata.sparse => {
+            ("portable", "sparse preservation requires portable")
+        }
+        Backend::Uring => ("uring", "explicitly requested"),
     }
 }
 

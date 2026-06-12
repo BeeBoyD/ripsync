@@ -10,32 +10,58 @@ mod args;
 mod reporter;
 mod tui;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
-use ferry_core::apply::{ApplyOptions, MetadataOptions, apply_plan};
+use ferry_core::apply::{ApplyOptions, MetadataOptions, apply_plan_controlled};
 use ferry_core::index::Manifest;
-use ferry_core::plan::{PlanOptions, build_plan};
+use ferry_core::plan::{PlanOptions, build_plan_controlled};
+use ferry_core::report::{Event, Reporter, RunPhase, RunStatus};
+use ferry_core::verify::{VerificationSummary, verify};
+use ferry_core::{Error, RunControl};
 
 use args::{Args, OutputFormat};
 use reporter::CliReporter;
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(error) = run() {
+        if error
+            .downcast_ref::<Error>()
+            .is_some_and(|e| matches!(e, Error::Cancelled))
+        {
+            std::process::exit(130);
+        }
+        eprintln!("error: {error:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let args = Args::parse();
     init_tracing(args.verbose);
 
-    if args.bwlimit.is_some() && args.verbose > 0 {
-        eprintln!("note: --bwlimit is parsed but not yet enforced (later phase)");
+    if args.bwlimit.is_some() {
+        bail!("--bwlimit is not supported in Ferry 0.3");
     }
-    if args.partial && args.verbose > 0 {
-        eprintln!("note: --partial is parsed but not yet enforced (later phase)");
+    if args.partial {
+        bail!("--partial is not supported in Ferry 0.3");
     }
 
     let threads = args.thread_count();
     let excludes = build_excludes(&args.exclude)?;
 
-    let plan = build_plan(
+    let use_tui = !args.no_tui
+        && args.output == OutputFormat::Human
+        && !args.quiet
+        && std::io::IsTerminal::is_terminal(&std::io::stdout());
+    if use_tui {
+        return tui::run(&args, threads, &excludes);
+    }
+
+    let reporter = CliReporter::new(args.output, args.quiet, args.verbose, args.dry_run);
+    let control = RunControl::default();
+    let plan = build_plan_controlled(
         &args.src,
         &args.dst,
         PlanOptions {
@@ -46,6 +72,8 @@ fn main() -> Result<()> {
             hard_links: args.hard_links,
         },
         &excludes,
+        &control,
+        &reporter,
     )
     .with_context(|| {
         format!(
@@ -55,33 +83,38 @@ fn main() -> Result<()> {
         )
     })?;
 
-    // TUI path (Phase 3) — falls back to plain output with --no-tui, --output json,
-    // or when stdout is not a terminal.
-    let use_tui = !args.no_tui
-        && args.output == OutputFormat::Human
-        && !args.quiet
-        && std::io::IsTerminal::is_terminal(&std::io::stdout());
-
-    if use_tui {
-        return tui::run(&plan, &args, threads);
-    }
-
-    let reporter = CliReporter::new(args.output, args.quiet, args.verbose, args.dry_run);
-
-    // Delete guard: show the preview, and only actually delete with --yes.
+    // Delete guard: no destination mutation starts before destructive approval.
     let mut yes = args.yes;
     if args.delete {
         reporter.print_delete_preview(&plan);
         if !yes && !args.dry_run && !plan.deletions.is_empty() {
-            eprintln!(
-                "refusing to delete {} entries without --yes (planning only)",
-                plan.deletions.len()
-            );
-            yes = false;
+            if args.output == OutputFormat::Human
+                && std::io::IsTerminal::is_terminal(&std::io::stdin())
+            {
+                eprint!("Type DELETE and press Enter to approve: ");
+                let mut approval = String::new();
+                std::io::stdin()
+                    .read_line(&mut approval)
+                    .context("reading delete approval")?;
+                yes = approval.trim_end() == "DELETE";
+                if !yes {
+                    bail!("delete approval rejected before mutation");
+                }
+            } else {
+                bail!("--delete requires --yes in noninteractive mode");
+            }
         }
     }
 
-    let stats = apply_plan(
+    let metadata = MetadataOptions {
+        hard_links: args.hard_links,
+        sparse: args.sparse,
+        xattrs: args.xattrs,
+        acls: args.acls,
+        owner: args.owner,
+        group: args.group,
+    };
+    let stats = apply_plan_controlled(
         &plan,
         &args.src,
         &args.dst,
@@ -93,34 +126,59 @@ fn main() -> Result<()> {
             reflink: args.reflink.into(),
             fsync: args.fsync.into(),
             backend: args.backend.into(),
-            metadata: MetadataOptions {
-                hard_links: args.hard_links,
-                sparse: args.sparse,
-                xattrs: args.xattrs,
-                acls: args.acls,
-                owner: args.owner,
-                group: args.group,
-            },
+            metadata,
         },
         &reporter,
+        &control,
     )
     .context("applying sync plan")?;
 
+    let verification = if !args.dry_run && stats.errors == 0 {
+        verify(
+            &plan,
+            &args.src,
+            &args.dst,
+            args.verify.into(),
+            metadata,
+            threads,
+            &control,
+            &reporter,
+        )?
+    } else {
+        VerificationSummary::default()
+    };
     let deletes_complete = !args.delete || args.yes || plan.deletions.is_empty();
-    if args.index && !args.dry_run && stats.errors == 0 && deletes_complete {
-        Manifest::from_destination(&plan, &args.dst, args.checksum)?
-            .save(&args.dst)
+    let successful = stats.errors == 0 && verification.mismatches.is_empty();
+    if args.index && !args.dry_run && successful && deletes_complete {
+        reporter.event(Event::Phase(RunPhase::Finalizing));
+        Manifest::persist_after_plan(&plan, &args.dst, args.checksum)
             .context("saving persistent index")?;
     }
 
+    let status = if successful {
+        RunStatus::Success
+    } else {
+        RunStatus::Failed
+    };
+    reporter.event(Event::Phase(if successful {
+        RunPhase::Done
+    } else {
+        RunPhase::Failed
+    }));
+    reporter.event(Event::Finished { status });
     reporter.finish(
         &stats,
         &args.src.display().to_string(),
         &args.dst.display().to_string(),
+        status,
+        &verification,
     );
 
+    if !verification.mismatches.is_empty() {
+        return Err(Error::Verification(verification.mismatches.len()).into());
+    }
     if stats.errors > 0 {
-        std::process::exit(1);
+        bail!("sync completed with {} per-entry error(s)", stats.errors);
     }
     Ok(())
 }

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::{Parser, ValueEnum};
 
 /// Ferry — a fast, memory-safe rsync alternative (local sync milestone).
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(name = "ferry", version, about, long_about = None)]
 pub struct Args {
     /// Source directory.
@@ -45,11 +45,14 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = FsyncArg::Auto)]
     pub fsync: FsyncArg,
 
-    /// File-copy backend. `auto` uses io_uring on Linux when available and the
-    /// portable path otherwise; `uring`/`portable` force one. Output is
-    /// byte-identical regardless.
+    /// File-copy backend. `auto` selects the portable path;
+    /// `uring` remains available explicitly on Linux.
     #[arg(long, value_enum, default_value_t = BackendArg::Auto)]
     pub backend: BackendArg,
+
+    /// Post-copy verification scope.
+    #[arg(long, value_enum, default_value_t = VerifyArg::None)]
+    pub verify: VerifyArg,
 
     /// Disable the persistent destination index used for fast incremental runs.
     #[arg(long = "no-index", action = clap::ArgAction::SetFalse, default_value_t = true)]
@@ -83,11 +86,11 @@ pub struct Args {
     #[arg(long, value_name = "PAT")]
     pub exclude: Vec<String>,
 
-    /// Bandwidth limit (parsed now, enforced in a later phase).
+    /// Unsupported placeholder; exits with an explicit error.
     #[arg(long, value_name = "RATE")]
     pub bwlimit: Option<String>,
 
-    /// Keep partial files for resume (later phase).
+    /// Unsupported placeholder; exits with an explicit error.
     #[arg(long)]
     pub partial: bool,
 
@@ -166,12 +169,33 @@ impl From<FsyncArg> for ferry_core::copy::FsyncMode {
 /// CLI form of the copy backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum BackendArg {
-    /// io_uring on Linux when available, else portable.
+    /// Portable-first automatic selection.
     Auto,
     /// Force the io_uring backend.
     Uring,
     /// Force the portable backend.
     Portable,
+}
+
+/// CLI form of post-copy verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum VerifyArg {
+    /// Do not verify.
+    None,
+    /// Verify copied and updated entries.
+    Changed,
+    /// Compare the complete source and destination trees.
+    All,
+}
+
+impl From<VerifyArg> for ferry_core::verify::VerifyMode {
+    fn from(value: VerifyArg) -> Self {
+        match value {
+            VerifyArg::None => Self::None,
+            VerifyArg::Changed => Self::Changed,
+            VerifyArg::All => Self::All,
+        }
+    }
 }
 
 impl From<BackendArg> for ferry_core::apply::Backend {

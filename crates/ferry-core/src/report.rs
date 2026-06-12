@@ -8,9 +8,57 @@ use std::path::PathBuf;
 
 use crate::plan::Action;
 
+/// Lifecycle phase of a sync run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunPhase {
+    /// Walking and classifying trees.
+    Planning,
+    /// Awaiting destructive-operation approval.
+    Review,
+    /// Creating directories and copying entries.
+    Copying,
+    /// Removing destination-only entries.
+    Deleting,
+    /// Comparing source and destination.
+    Verifying,
+    /// Persisting the destination index.
+    Finalizing,
+    /// Run completed successfully.
+    Done,
+    /// Run was cancelled.
+    Cancelled,
+    /// Run failed.
+    Failed,
+}
+
+/// Final run outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunStatus {
+    /// All requested phases completed.
+    Success,
+    /// The user cancelled cooperatively.
+    Cancelled,
+    /// An operation or verification failed.
+    Failed,
+}
+
 /// A progress event emitted while applying a plan.
 #[derive(Debug, Clone)]
 pub enum Event {
+    /// The lifecycle phase changed.
+    Phase(RunPhase),
+    /// Planning walk/classification progress.
+    PlanningProgress {
+        /// Entries observed so far.
+        entries: usize,
+    },
+    /// Concrete backend selection and rationale.
+    BackendSelected {
+        /// Backend name.
+        backend: &'static str,
+        /// Selection reason.
+        reason: &'static str,
+    },
     /// Emitted once before work starts.
     Planned {
         /// Number of files that will be copied or updated.
@@ -66,6 +114,27 @@ pub enum Event {
         rel: PathBuf,
         /// Human-readable error text.
         error: String,
+    },
+    /// Verification progress.
+    VerificationProgress {
+        /// Entries checked.
+        checked: usize,
+        /// Total entries scheduled.
+        total: usize,
+        /// Mismatches seen so far.
+        mismatches: usize,
+    },
+    /// A structured verification mismatch.
+    VerificationFailed {
+        /// Relative path.
+        rel: PathBuf,
+        /// What differed.
+        detail: String,
+    },
+    /// Final run outcome.
+    Finished {
+        /// Status of the run.
+        status: RunStatus,
     },
 }
 
