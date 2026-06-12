@@ -238,7 +238,34 @@ fn apply_real<R: Reporter>(
         run_deletions(plan, &root_canon, reporter, counters);
     }
 
+    // 6. Batched directory fsync for rename durability (auto mode). `always`
+    // already fsynced each file; `never` skips even this.
+    if opts.fsync == FsyncMode::Auto {
+        fsync_touched_dirs(&root_canon, &dirs, &files);
+    }
+
     Ok(())
+}
+
+/// Fsync every directory that received a create/rename, once each, so the
+/// directory entries (and thus the atomic renames) are durable.
+fn fsync_touched_dirs(root_canon: &Path, dirs: &[&Entry], files: &[(&Entry, Action)]) {
+    let mut targets: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
+    targets.insert(root_canon.to_path_buf());
+    for entry in dirs {
+        targets.insert(root_canon.join(&entry.rel));
+    }
+    for (entry, _) in files {
+        if let Some(parent) = root_canon.join(&entry.rel).parent() {
+            targets.insert(parent.to_path_buf());
+        }
+    }
+    for dir in targets {
+        if let Ok(f) = std::fs::File::open(&dir) {
+            let _ = f.sync_all();
+        }
+    }
 }
 
 /// Execute the (already gated) deletion phase, deepest paths first.

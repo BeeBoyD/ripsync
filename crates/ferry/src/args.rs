@@ -39,6 +39,12 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = ReflinkArg::Auto)]
     pub reflink: ReflinkArg,
 
+    /// Durability vs speed. `auto`/`never` skip per-file fsync (fast); `auto`
+    /// still fsyncs each touched directory once so renames survive a crash;
+    /// `always` fsyncs every file before rename (slowest, strongest).
+    #[arg(long, value_enum, default_value_t = FsyncArg::Auto)]
+    pub fsync: FsyncArg,
+
     /// Exclude paths matching this glob (repeatable).
     #[arg(long, value_name = "PAT")]
     pub exclude: Vec<String>,
@@ -98,6 +104,27 @@ impl From<ReflinkArg> for ferry_core::copy::ReflinkMode {
             ReflinkArg::Auto => Self::Auto,
             ReflinkArg::Always => Self::Always,
             ReflinkArg::Never => Self::Never,
+        }
+    }
+}
+
+/// CLI form of the fsync strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum FsyncArg {
+    /// Skip per-file fsync; fsync touched directories once at the end.
+    Auto,
+    /// Fsync every file before rename.
+    Always,
+    /// Skip all fsync.
+    Never,
+}
+
+impl From<FsyncArg> for ferry_core::copy::FsyncMode {
+    fn from(a: FsyncArg) -> Self {
+        match a {
+            FsyncArg::Auto => Self::Auto,
+            FsyncArg::Always => Self::Always,
+            FsyncArg::Never => Self::Never,
         }
     }
 }

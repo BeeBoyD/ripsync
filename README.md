@@ -42,6 +42,8 @@ ferry <SRC> <DST> [FLAGS]
 | `--yes` | Confirm destructive actions. |
 | `-c, --checksum` | Compare by content hash, not size+mtime. |
 | `--delta` | Force delta transfer even locally (demo/bench). |
+| `--reflink <auto\|always\|never>` | Copy-on-write clone on CoW filesystems (btrfs/XFS/APFS/ReFS). `auto` tries it and falls back; `always` requires it; `never` skips it. |
+| `--fsync <auto\|always\|never>` | Durability vs speed. `auto`/`never` skip per-file fsync; `auto` still fsyncs touched directories once so renames survive a crash; `always` fsyncs every file before rename (slowest, strongest). |
 | `--exclude <PAT>` | Glob, repeatable. |
 | `--bwlimit <RATE>` | Throttle (parsed now, enforced later). |
 | `--partial` | Keep partial files for resume (later phase). |

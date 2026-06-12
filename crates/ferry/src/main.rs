@@ -82,7 +82,7 @@ fn main() -> Result<()> {
             delete: args.delete,
             threads,
             reflink: args.reflink.into(),
-            fsync: ferry_core::copy::FsyncMode::Always,
+            fsync: args.fsync.into(),
         },
         &reporter,
     )
