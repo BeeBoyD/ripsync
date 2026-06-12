@@ -1,9 +1,11 @@
 //! Persistent destination index: an atomic v3 snapshot plus append-only deltas.
 
-use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+// foldhash is a faster, non-DoS-hardened hasher; manifest keys are local paths,
+// never attacker-controlled network input, so the trade-off is pure win.
+use foldhash::{HashMap, HashMapExt};
 use serde::{Deserialize, Serialize};
 
 use crate::meta::{FileTypeKind, canonical_root, contained_target, meta_min};
@@ -396,9 +398,10 @@ fn destination_matches(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::io::Write;
     use std::path::Path;
+
+    use foldhash::{HashMap, HashMapExt};
 
     use super::{Delta, Manifest, ManifestEntry};
 

@@ -177,6 +177,7 @@ pub fn apply_plan_controlled<R: Reporter>(
 }
 
 /// The on-disk apply phases (everything except dry-run bookkeeping).
+#[allow(clippy::too_many_lines)]
 fn apply_real<R: Reporter>(
     plan: &SyncPlan,
     src: &Path,
@@ -188,8 +189,6 @@ fn apply_real<R: Reporter>(
 ) -> Result<()> {
     reporter.event(Event::Phase(RunPhase::Copying));
     control.checkpoint()?;
-    let (backend, reason) = selected_backend(opts);
-    reporter.event(Event::BackendSelected { backend, reason });
     let root_canon = canonical_root(dst)?;
 
     // Partition work by kind. Directories are batched by depth, files run in
@@ -236,6 +235,16 @@ fn apply_real<R: Reporter>(
         }
     }
 
+    // Resolve `auto` now that the file set (and its size distribution) is known,
+    // then report the concrete backend and reason.
+    let (effective_backend, backend_name, backend_reason) = resolve_backend(opts, &files);
+    reporter.event(Event::BackendSelected {
+        backend: backend_name,
+        reason: backend_reason,
+    });
+    let mut copy_opts = opts;
+    copy_opts.backend = effective_backend;
+
     let pool = build_pool(opts.threads);
 
     // 1. Directories, parent-depth batches. Peers at one depth are independent.
@@ -259,7 +268,17 @@ fn apply_real<R: Reporter>(
 
     // 2. Files.
     control.checkpoint()?;
-    let run_files = || copy_files(&files, src, &root_canon, opts, reporter, counters, control);
+    let run_files = || {
+        copy_files(
+            &files,
+            src,
+            &root_canon,
+            copy_opts,
+            reporter,
+            counters,
+            control,
+        )
+    };
     match &pool {
         Some(p) => p.install(run_files)?,
         None => run_files()?,
@@ -739,24 +758,83 @@ fn copy_hardlinks<R: Reporter>(
     Ok(())
 }
 
-fn selected_backend(opts: ApplyOptions) -> (&'static str, &'static str) {
+/// Resolve `--backend auto` against the concrete file set and platform, and
+/// return the backend to actually use plus a display name and reason.
+///
+/// The heuristic: on Linux with the `io_uring` backend compiled in, a
+/// many-small-files workload (at least [`AUTO_URING_MIN_FILES`] files whose
+/// median size is below [`AUTO_URING_MEDIAN_MAX`]) selects `io_uring` to amortize
+/// syscall overhead; everything else uses the portable ladder. Override with an
+/// explicit `--backend`. The heuristic is documented in `docs/performance.md`.
+fn resolve_backend(
+    opts: ApplyOptions,
+    files: &[(&Entry, Action)],
+) -> (Backend, &'static str, &'static str) {
     match opts.backend {
-        Backend::Auto => {
-            #[cfg(windows)]
-            {
-                ("refs/copyfileex", "auto: Windows block-clone / CopyFileExW")
-            }
-            #[cfg(not(windows))]
-            {
-                ("portable", "auto is portable-first")
-            }
-        }
-        Backend::Portable => ("portable", "explicitly requested"),
-        Backend::Uring if opts.metadata.sparse => {
-            ("portable", "sparse preservation requires portable")
-        }
-        Backend::Uring => ("uring", "explicitly requested"),
+        Backend::Portable => (Backend::Portable, "portable", "explicitly requested"),
+        Backend::Uring if opts.metadata.sparse => (
+            Backend::Portable,
+            "portable",
+            "sparse preservation requires portable",
+        ),
+        Backend::Uring => (Backend::Uring, "uring", "explicitly requested"),
+        Backend::Auto => resolve_auto_backend(opts, files),
     }
+}
+
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+fn resolve_auto_backend(
+    opts: ApplyOptions,
+    files: &[(&Entry, Action)],
+) -> (Backend, &'static str, &'static str) {
+    if !opts.metadata.sparse && many_small_files(files) {
+        (
+            Backend::Uring,
+            "uring",
+            "auto: many small files (count high, median < 64 KiB)",
+        )
+    } else {
+        (Backend::Portable, "portable", "auto: portable-first")
+    }
+}
+
+#[cfg(windows)]
+fn resolve_auto_backend(
+    _opts: ApplyOptions,
+    _files: &[(&Entry, Action)],
+) -> (Backend, &'static str, &'static str) {
+    (
+        Backend::Portable,
+        "refs/copyfileex",
+        "auto: Windows block-clone / CopyFileExW",
+    )
+}
+
+#[cfg(not(any(all(target_os = "linux", feature = "io-uring"), windows)))]
+fn resolve_auto_backend(
+    _opts: ApplyOptions,
+    _files: &[(&Entry, Action)],
+) -> (Backend, &'static str, &'static str) {
+    (Backend::Portable, "portable", "auto: portable-first")
+}
+
+/// Minimum file count for the auto heuristic to consider `io_uring`.
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+const AUTO_URING_MIN_FILES: usize = 4096;
+/// Maximum median file size (bytes) for the auto heuristic to pick `io_uring`.
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+const AUTO_URING_MEDIAN_MAX: u64 = 64 * 1024;
+
+/// Whether `files` looks like a many-small-files workload (cheap O(n) median).
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+fn many_small_files(files: &[(&Entry, Action)]) -> bool {
+    if files.len() < AUTO_URING_MIN_FILES {
+        return false;
+    }
+    let mut sizes: Vec<u64> = files.iter().map(|(entry, _)| entry.len).collect();
+    let mid = sizes.len() / 2;
+    sizes.select_nth_unstable(mid);
+    sizes[mid] < AUTO_URING_MEDIAN_MAX
 }
 
 /// Atomically create a hardlink to an already materialized canonical file.

@@ -45,9 +45,26 @@ pub struct VerificationSummary {
     pub mismatches: Vec<VerificationMismatch>,
 }
 
+/// Files at or above this size are hashed with a memory-mapped, rayon-parallel
+/// BLAKE3 pass; smaller (or uncacheable) files stream through a single buffer,
+/// which avoids mmap setup cost and keeps tiny-file throughput high.
+const MMAP_HASH_THRESHOLD: u64 = 16 * 1024 * 1024;
+
 fn hash_file(path: &Path) -> Result<[u8; 32]> {
-    let mut file = std::fs::File::open(path).map_err(|error| Error::io(path, error))?;
     let mut hasher = blake3::Hasher::new();
+    let len = std::fs::metadata(path)
+        .map_err(|error| Error::io(path, error))?
+        .len();
+
+    if len >= MMAP_HASH_THRESHOLD {
+        // Falls back internally if the file cannot be mapped.
+        hasher
+            .update_mmap_rayon(path)
+            .map_err(|error| Error::io(path, error))?;
+        return Ok(*hasher.finalize().as_bytes());
+    }
+
+    let mut file = std::fs::File::open(path).map_err(|error| Error::io(path, error))?;
     let mut buffer = vec![0; 1024 * 1024];
     loop {
         let read = file

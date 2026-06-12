@@ -61,8 +61,39 @@ The 1M/100-change scenario should be run on the same filesystem and cache mode
 as its baseline. Logical tree GiB/s on a re-sync is not transfer throughput and
 must be labeled accordingly.
 
+## Backend auto-selection (v0.4)
+
+`--backend auto` resolves per platform and, on Linux, per workload:
+
+- **Linux:** after planning, ripsync inspects the file set. If it has at least
+  **4096** files **and** the median file size is below **64 KiB**, it selects the
+  `io_uring` backend to amortize syscall overhead across many tiny copies;
+  otherwise it uses the portable ladder. The median is computed in O(n) with
+  `select_nth_unstable`, so the check is negligible next to the copy itself.
+- **macOS / other Unix:** the portable `clonefile` / `copy_file_range` / buffered
+  ladder.
+- **Windows:** the ReFS block-clone / `CopyFileExW` backend.
+
+The decision (and its reason) is reported as the `BackendSelected` event and in
+`--stats` / JSON output. It is always overridable with an explicit `--backend`.
+Thresholds live in `apply.rs` (`AUTO_URING_MIN_FILES`, `AUTO_URING_MEDIAN_MAX`).
+
+## v0.4 Performance Changes
+
+- Manifest and plan-classification maps use `foldhash` instead of SipHash. Keys
+  are local paths and `(dev, ino)` pairs, never attacker-controlled, so the
+  faster non-DoS-hardened hash is safe.
+- `--checksum` and verification hash files at or above 16 MiB with
+  `blake3::Hasher::update_mmap_rayon` (memory-mapped, rayon-parallel); smaller
+  files stream through a single buffer.
+- The Linux portable large-file path issues `posix_fadvise(SEQUENTIAL)` +
+  `WILLNEED` (via `rustix`) for files ≥ 8 MiB and copies with a 1 MiB buffer.
+- Release profile: `lto = "fat"`, `codegen-units = 1`, `strip = true`,
+  `opt-level = 3`. `panic = "unwind"` is retained so the RAII terminal guard and
+  the io_uring / Windows-handle `Drop` cleanups run on panic.
+
 ## Implementation Notes
 
-Incremental runs use `HashMap` lookup, a one-time parallel sort after each walk,
-live stat validation for indexed skips, and journal updates that stat only
+Incremental runs use a `foldhash` map lookup, a one-time parallel sort after each
+walk, live stat validation for indexed skips, and journal updates that stat only
 changed entries. Initial sync still writes one complete atomic snapshot.
