@@ -2,15 +2,20 @@
 //! plan/apply, metadata and symlink-containment safety.
 //!
 //! No terminal I/O lives here; the CLI crate owns presentation.
-// The whole crate is `forbid(unsafe_code)` — except when the Linux `io-uring`
-// backend is compiled in, where the single `io::uring` module opts into `unsafe`
-// (a crate-level `forbid` cannot be locally relaxed, so we drop to `deny`, which
-// still rejects `unsafe` everywhere that does not explicitly `allow` it).
+// The whole crate is `forbid(unsafe_code)` — except in the isolated platform IO
+// modules: the Linux `io::uring` backend and the Windows `io::windows` backend,
+// which must call raw OS APIs. A crate-level `forbid` cannot be locally relaxed,
+// so on those configurations we drop to `deny`, which still rejects `unsafe`
+// everywhere that does not explicitly `allow` it. Every `unsafe` block in those
+// modules carries a `// SAFETY:` comment.
 #![cfg_attr(
-    not(all(target_os = "linux", feature = "io-uring")),
+    not(any(all(target_os = "linux", feature = "io-uring"), windows)),
     forbid(unsafe_code)
 )]
-#![cfg_attr(all(target_os = "linux", feature = "io-uring"), deny(unsafe_code))]
+#![cfg_attr(
+    any(all(target_os = "linux", feature = "io-uring"), windows),
+    deny(unsafe_code)
+)]
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 

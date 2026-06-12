@@ -534,11 +534,24 @@ fn finalize_file(
             }
         }
     }
-    if let Err(e) = std::fs::rename(tmp, target) {
+    if let Err(e) = atomic_replace(tmp, target) {
         let _ = std::fs::remove_file(tmp);
         return Err(Error::io(target, e));
     }
     Ok(())
+}
+
+/// Atomically move `tmp` onto `target`, replacing any existing file. POSIX
+/// `rename(2)` is atomic and replaces in place; Windows needs `MoveFileExW`
+/// (plain `rename` there fails when the target already exists).
+#[cfg(not(windows))]
+fn atomic_replace(tmp: &Path, target: &Path) -> io::Result<()> {
+    std::fs::rename(tmp, target)
+}
+
+#[cfg(windows)]
+fn atomic_replace(tmp: &Path, target: &Path) -> io::Result<()> {
+    crate::io::windows::replace_file(tmp, target)
 }
 
 /// Portable single-file copy: prepare → ladder → finalize. Returns bytes written.
@@ -728,7 +741,16 @@ fn copy_hardlinks<R: Reporter>(
 
 fn selected_backend(opts: ApplyOptions) -> (&'static str, &'static str) {
     match opts.backend {
-        Backend::Auto => ("portable", "auto is portable-first"),
+        Backend::Auto => {
+            #[cfg(windows)]
+            {
+                ("refs/copyfileex", "auto: Windows block-clone / CopyFileExW")
+            }
+            #[cfg(not(windows))]
+            {
+                ("portable", "auto is portable-first")
+            }
+        }
         Backend::Portable => ("portable", "explicitly requested"),
         Backend::Uring if opts.metadata.sparse => {
             ("portable", "sparse preservation requires portable")
@@ -758,7 +780,7 @@ fn create_hardlink(root_canon: &Path, entry: &Entry, canonical_rel: &Path) -> Re
             return Err(Error::io(&target, error));
         }
     }
-    if let Err(error) = std::fs::rename(&tmp, &target) {
+    if let Err(error) = atomic_replace(&tmp, &target) {
         let _ = std::fs::remove_file(&tmp);
         return Err(Error::io(&target, error));
     }
@@ -809,7 +831,50 @@ fn symlink_impl(target: &Path, link: &Path) -> Result<()> {
     std::os::unix::fs::symlink(target, link).map_err(|e| Error::io(link, e))
 }
 
-#[cfg(not(unix))]
+/// Windows symlink creation requires `SeCreateSymbolicLinkPrivilege` (admin) or
+/// Developer Mode. When it is missing the OS returns `ERROR_PRIVILEGE_NOT_HELD`
+/// (1314); we warn once and skip the link rather than failing the whole run.
+#[cfg(windows)]
+fn symlink_impl(target: &Path, link: &Path) -> Result<()> {
+    use std::os::windows::fs::{symlink_dir, symlink_file};
+
+    // Pick a directory vs file symlink by what the target resolves to relative
+    // to the link's own directory; default to a file symlink.
+    let resolved = link
+        .parent()
+        .map_or_else(|| target.to_path_buf(), |parent| parent.join(target));
+    let is_dir = std::fs::metadata(&resolved)
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+
+    let result = if is_dir {
+        symlink_dir(target, link)
+    } else {
+        symlink_file(target, link)
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(1314) => {
+            warn_once_symlink_privilege();
+            Ok(())
+        }
+        Err(error) => Err(Error::io(link, error)),
+    }
+}
+
+#[cfg(windows)]
+fn warn_once_symlink_privilege() {
+    use std::sync::atomic::AtomicBool;
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            "skipping symlink(s): creating symbolic links on Windows needs \
+             administrator rights or Developer Mode (ERROR_PRIVILEGE_NOT_HELD)"
+        );
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn symlink_impl(_target: &Path, link: &Path) -> Result<()> {
     Err(Error::io(
         link,

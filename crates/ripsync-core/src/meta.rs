@@ -13,6 +13,17 @@ use filetime::FileTime;
 
 use crate::{Error, Result};
 
+/// Emit a one-time warning that a POSIX-only metadata facility is unavailable on
+/// this platform (Windows). The operation degrades to a no-op; mtime is still
+/// preserved.
+#[cfg(not(unix))]
+fn warn_once(flag: &std::sync::atomic::AtomicBool, what: &str) {
+    use std::sync::atomic::Ordering;
+    if !flag.swap(true, Ordering::Relaxed) {
+        tracing::warn!("{what} is not supported on this platform; skipping (mtime is preserved)");
+    }
+}
+
 /// The kind of a stat-ed entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileTypeKind {
@@ -158,7 +169,14 @@ pub fn set_owner_group(
             .map_err(|error| Error::io(path, std::io::Error::from(error)))?;
     }
     #[cfg(not(unix))]
-    let _ = (path, uid, gid, owner, group, follow);
+    {
+        if owner || group {
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            warn_once(&WARNED, "owner/group preservation");
+        }
+        let _ = (path, uid, gid, follow);
+    }
     Ok(())
 }
 
@@ -185,7 +203,14 @@ pub fn copy_xattrs(src: &Path, dst: &Path, xattrs: bool, acls: bool) -> Result<(
         }
     }
     #[cfg(not(unix))]
-    let _ = (src, dst, xattrs, acls);
+    {
+        if xattrs || acls {
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            warn_once(&WARNED, "extended attributes / POSIX ACLs");
+        }
+        let _ = (src, dst);
+    }
     Ok(())
 }
 
@@ -262,6 +287,11 @@ pub fn set_mode(path: &Path, mode: u32) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let perm = std::fs::Permissions::from_mode(mode);
         std::fs::set_permissions(path, perm).map_err(|e| Error::io(path, e))?;
+    }
+    #[cfg(not(unix))]
+    {
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        warn_once(&WARNED, "POSIX permission bits");
     }
     Ok(())
 }

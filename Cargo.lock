@@ -1301,6 +1301,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+ "windows-sys 0.59.0",
  "xattr",
 ]
 

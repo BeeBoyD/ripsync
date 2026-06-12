@@ -33,10 +33,14 @@ serde = { workspace = true }
 serde_json.workspace = true
 toml.workspace = true
 num_cpus.workspace = true
-mimalloc.workspace = true
+mimalloc = { workspace = true, optional = true }
 
 [features]
-# Use the system allocator instead of mimalloc.
+default = ["mimalloc"]
+# mimalloc global allocator (on by default; speeds up the alloc-heavy walk).
+mimalloc = ["dep:mimalloc"]
+# Use the system allocator instead of mimalloc. Combine with
+# `--no-default-features` to drop the mimalloc dependency entirely.
 system-malloc = []
 # Build the opt-in `rs` short-alias binary (see [[bin]] above).
 rs-alias = []
@@ -48,4 +52,8 @@ predicates = "3"
 proptest.workspace = true
 blake3.workspace = true
 filetime.workspace = true
+
+# `xattr` is POSIX-only (its Windows stub does not compile); the xattr test is
+# `#[cfg(unix)]`.
+[target.'cfg(unix)'.dev-dependencies]
 xattr.workspace = true

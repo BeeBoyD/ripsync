@@ -2,8 +2,11 @@
 //! (kernel-side copy) → buffered fallback. Each strategy writes into the caller's
 //! temporary path so the atomic-rename invariant is preserved.
 
+#[cfg(not(windows))]
 use std::fs::File;
-use std::io::{self, BufReader, BufWriter};
+use std::io;
+#[cfg(not(windows))]
+use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
 /// How aggressively to attempt reflink (copy-on-write) clones.
@@ -31,6 +34,7 @@ pub enum FsyncMode {
 }
 
 /// Buffer size for the portable fallback copy.
+#[cfg(not(windows))]
 const BUF: usize = 1 << 20; // 1 MiB
 
 /// Copy `src` into the (not-yet-existing) `tmp`, returning bytes written.
@@ -43,6 +47,27 @@ const BUF: usize = 1 << 20; // 1 MiB
 /// Returns the underlying I/O error if every applicable strategy fails, or if
 /// [`ReflinkMode::Always`] is set and the clone is unsupported.
 pub fn copy_file_into(
+    src: &Path,
+    tmp: &Path,
+    reflink: ReflinkMode,
+    sparse: bool,
+) -> io::Result<u64> {
+    // Windows has its own ladder (block clone → CopyFileExW → buffered); sparse
+    // preservation is not offered on that backend.
+    #[cfg(not(windows))]
+    {
+        copy_file_into_portable(src, tmp, reflink, sparse)
+    }
+    #[cfg(windows)]
+    {
+        let _ = sparse;
+        crate::io::windows::copy_file_into(src, tmp, reflink)
+    }
+}
+
+/// The POSIX copy ladder: reflink → sparse → `copy_file_range` → buffered.
+#[cfg(not(windows))]
+fn copy_file_into_portable(
     src: &Path,
     tmp: &Path,
     reflink: ReflinkMode,
@@ -148,6 +173,7 @@ fn sparse_copy(src: &Path, tmp: &Path) -> io::Result<u64> {
 }
 
 /// Portable buffered copy with a large buffer.
+#[cfg(not(windows))]
 fn buffered_copy(src: &Path, tmp: &Path) -> io::Result<u64> {
     let reader = File::open(src)?;
     let writer = File::create(tmp)?;
