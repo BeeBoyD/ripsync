@@ -174,6 +174,10 @@ fn apply_real<R: Reporter>(
     let pool = build_pool(opts.threads);
     let run_files = || {
         files.par_iter().for_each(|(entry, action)| {
+            reporter.event(Event::FileStart {
+                rel: entry.rel.clone(),
+                len: entry.len,
+            });
             match copy_file_atomic(src, &root_canon, entry) {
                 Ok(bytes) => {
                     counters.bytes.fetch_add(bytes, Ordering::Relaxed);
