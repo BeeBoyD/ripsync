@@ -1,0 +1,20 @@
+[book]
+title = "ripsync"
+description = "rsync's superpower, none of its footguns."
+authors = ["ripsync contributors"]
+language = "en"
+src = "."
+
+[build]
+build-dir = "../target/book"
+create-missing = false
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/beeboyd/ripsync"
+edit-url-template = "https://github.com/beeboyd/ripsync/edit/main/docs/{path}"
+
+[output.html.fold]
+enable = true
+level = 1
