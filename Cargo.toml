@@ -32,6 +32,10 @@ criterion = "0.5"
 filetime = "0.2"
 rand = "0.8"
 num_cpus = "1"
+reflink-copy = "0.1"
+rustix = { version = "1", features = ["fs"] }
+bincode = "1"
+xattr = "1"
 
 [profile.release]
 lto = "thin"

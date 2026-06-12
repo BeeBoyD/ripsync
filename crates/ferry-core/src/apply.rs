@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rayon::prelude::*;
 
+use crate::copy::{FsyncMode, ReflinkMode, copy_file_into};
 use crate::meta::{
     canonical_root, check_relative, contained_target, set_mode, set_mtime, set_symlink_mtime,
 };
@@ -31,6 +32,10 @@ pub struct ApplyOptions {
     pub delete: bool,
     /// Worker threads for the parallel copy phase (0 ⇒ rayon default).
     pub threads: usize,
+    /// Copy-on-write reflink strategy.
+    pub reflink: ReflinkMode,
+    /// Per-file fsync strategy.
+    pub fsync: FsyncMode,
 }
 
 /// Thread-safe running totals.
@@ -187,7 +192,7 @@ fn apply_real<R: Reporter>(
                 rel: entry.rel.clone(),
                 len: entry.len,
             });
-            match copy_file_atomic(src, &root_canon, entry) {
+            match copy_file_atomic(src, &root_canon, entry, opts.reflink, opts.fsync) {
                 Ok(bytes) => {
                     counters.bytes.fetch_add(bytes, Ordering::Relaxed);
                     counters.bump_action(*action);
@@ -308,7 +313,13 @@ fn report_fail<R: Reporter>(reporter: &R, counters: &Counters, rel: &Path, err: 
 }
 
 /// Atomically copy one file, preserving mode and mtime. Returns bytes written.
-fn copy_file_atomic(src: &Path, root_canon: &Path, entry: &Entry) -> Result<u64> {
+fn copy_file_atomic(
+    src: &Path,
+    root_canon: &Path,
+    entry: &Entry,
+    reflink: ReflinkMode,
+    fsync: FsyncMode,
+) -> Result<u64> {
     let src_path = src.join(&entry.rel);
     let dst_path = root_canon.join(&entry.rel);
     let target = contained_target(root_canon, &dst_path)?;
@@ -318,15 +329,8 @@ fn copy_file_atomic(src: &Path, root_canon: &Path, entry: &Entry) -> Result<u64>
 
     let tmp = parent.join(format!(".ferry-tmp-{:016x}", rand::random::<u64>()));
 
-    let copy_result = (|| -> io::Result<u64> {
-        let mut reader = std::fs::File::open(&src_path)?;
-        let mut writer = std::fs::File::create(&tmp)?;
-        let bytes = io::copy(&mut reader, &mut writer)?;
-        writer.sync_all()?;
-        Ok(bytes)
-    })();
-
-    let bytes = match copy_result {
+    // Copy ladder: reflink → copy_file_range → buffered. `tmp` must not pre-exist.
+    let bytes = match copy_file_into(&src_path, &tmp, reflink) {
         Ok(b) => b,
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
@@ -334,9 +338,15 @@ fn copy_file_atomic(src: &Path, root_canon: &Path, entry: &Entry) -> Result<u64>
         }
     };
 
-    // Metadata onto the temp file, then atomic swap into place.
+    // Metadata onto the temp file.
     set_mode(&tmp, entry.mode)?;
     set_mtime(&tmp, entry.mtime)?;
+    // Optional per-file durability.
+    if fsync == FsyncMode::Always {
+        if let Ok(f) = std::fs::File::open(&tmp) {
+            let _ = f.sync_all();
+        }
+    }
     // A directory in the way (type change dir → file): rename can't replace it.
     if let Ok(meta) = std::fs::symlink_metadata(&target) {
         if meta.is_dir() {

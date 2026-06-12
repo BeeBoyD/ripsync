@@ -34,6 +34,11 @@ pub struct Args {
     #[arg(long)]
     pub delta: bool,
 
+    /// Copy-on-write reflink strategy (CoW filesystems: btrfs/XFS/APFS/ReFS).
+    /// `auto` tries it and falls back; `always` requires it; `never` skips it.
+    #[arg(long, value_enum, default_value_t = ReflinkArg::Auto)]
+    pub reflink: ReflinkArg,
+
     /// Exclude paths matching this glob (repeatable).
     #[arg(long, value_name = "PAT")]
     pub exclude: Vec<String>,
@@ -74,6 +79,27 @@ pub enum OutputFormat {
     Human,
     /// Machine-readable JSON (final report).
     Json,
+}
+
+/// CLI form of the reflink strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ReflinkArg {
+    /// Try reflink, fall back when unsupported.
+    Auto,
+    /// Require reflink; error if unavailable.
+    Always,
+    /// Never attempt reflink.
+    Never,
+}
+
+impl From<ReflinkArg> for ferry_core::copy::ReflinkMode {
+    fn from(a: ReflinkArg) -> Self {
+        match a {
+            ReflinkArg::Auto => Self::Auto,
+            ReflinkArg::Always => Self::Always,
+            ReflinkArg::Never => Self::Never,
+        }
+    }
 }
 
 impl Args {

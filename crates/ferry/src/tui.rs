@@ -178,6 +178,8 @@ fn spawn_worker(
         yes: args.yes,
         delete: args.delete,
         threads,
+        reflink: args.reflink.into(),
+        fsync: ferry_core::copy::FsyncMode::Always,
     };
     let state = Arc::clone(state);
     let done = Arc::clone(done);

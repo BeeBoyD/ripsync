@@ -8,6 +8,7 @@
 
 pub mod apply;
 pub mod checksum;
+pub mod copy;
 pub mod delta;
 pub mod error;
 pub mod meta;
