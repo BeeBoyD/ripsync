@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use filetime::FileTime;
 use globset::GlobSet;
 
+use crate::meta::{FileTypeKind, meta_min};
 use crate::{Error, Result};
 
 /// What a walked entry is.
@@ -34,8 +35,12 @@ pub struct Entry {
     pub len: u64,
     /// Modification time (of the link itself for symlinks).
     pub mtime: FileTime,
-    /// Unix permission bits (0 on platforms without them).
+    /// Unix permission+type bits (0 on platforms without them).
     pub mode: u32,
+    /// Inode number (for hardlink detection and the index).
+    pub ino: u64,
+    /// Device id.
+    pub dev: u64,
 }
 
 impl Entry {
@@ -50,17 +55,6 @@ impl Entry {
     pub fn is_dir(&self) -> bool {
         matches!(self.kind, EntryKind::Dir)
     }
-}
-
-#[cfg(unix)]
-fn mode_of(meta: &std::fs::Metadata) -> u32 {
-    use std::os::unix::fs::PermissionsExt;
-    meta.permissions().mode()
-}
-
-#[cfg(not(unix))]
-fn mode_of(_meta: &std::fs::Metadata) -> u32 {
-    0
 }
 
 /// Walk `root` in parallel, returning entries sorted by relative path (so every
@@ -104,25 +98,20 @@ pub fn walk(root: &Path, threads: usize, excludes: &GlobSet) -> Result<Vec<Entry
             continue;
         }
 
-        let meta = std::fs::symlink_metadata(&path).map_err(|e| Error::io(&path, e))?;
-        let ftype = meta.file_type();
-        let mtime = FileTime::from_last_modification_time(&meta);
-        let mode = mode_of(&meta);
-
-        let kind = if ftype.is_symlink() {
-            let target = std::fs::read_link(&path).map_err(|e| Error::io(&path, e))?;
-            EntryKind::Symlink(target)
-        } else if ftype.is_dir() {
-            EntryKind::Dir
-        } else if ftype.is_file() {
-            EntryKind::File
-        } else {
+        let m = meta_min(&path)?;
+        let kind = match m.kind {
+            FileTypeKind::Symlink => {
+                let target = std::fs::read_link(&path).map_err(|e| Error::io(&path, e))?;
+                EntryKind::Symlink(target)
+            }
+            FileTypeKind::Dir => EntryKind::Dir,
+            FileTypeKind::File => EntryKind::File,
             // Sockets/FIFOs/devices: skip — not supported in this milestone.
-            continue;
+            FileTypeKind::Other => continue,
         };
 
         let len = if matches!(kind, EntryKind::File) {
-            meta.len()
+            m.len
         } else {
             0
         };
@@ -133,8 +122,10 @@ pub fn walk(root: &Path, threads: usize, excludes: &GlobSet) -> Result<Vec<Entry
                 rel,
                 kind,
                 len,
-                mtime,
-                mode,
+                mtime: m.mtime,
+                mode: m.mode,
+                ino: m.ino,
+                dev: m.dev,
             },
         );
     }

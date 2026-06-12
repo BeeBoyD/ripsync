@@ -13,6 +13,113 @@ use filetime::FileTime;
 
 use crate::{Error, Result};
 
+/// The kind of a stat-ed entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileTypeKind {
+    /// Regular file.
+    File,
+    /// Directory.
+    Dir,
+    /// Symbolic link.
+    Symlink,
+    /// Anything else (socket, FIFO, device) — unsupported.
+    Other,
+}
+
+/// Minimal metadata Ferry needs per entry: type, size, mtime, mode, and
+/// inode/device (for hardlink detection and the persistent index).
+#[derive(Debug, Clone, Copy)]
+pub struct MinMeta {
+    /// Entry kind.
+    pub kind: FileTypeKind,
+    /// Byte length (files only).
+    pub len: u64,
+    /// Modification time of the entry itself (links not followed).
+    pub mtime: FileTime,
+    /// Unix permission+type bits.
+    pub mode: u32,
+    /// Inode number.
+    pub ino: u64,
+    /// Device id.
+    pub dev: u64,
+}
+
+/// Fetch [`MinMeta`] for `path` without following a final symlink.
+///
+/// On Linux this uses `statx` with a minimal field mask (cheaper than a full
+/// `stat`); elsewhere it falls back to `symlink_metadata`.
+///
+/// # Errors
+///
+/// Returns an error if the path cannot be stat-ed.
+#[cfg(target_os = "linux")]
+pub fn meta_min(path: &Path) -> Result<MinMeta> {
+    use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
+
+    const S_IFMT: u32 = 0o170_000;
+
+    let mask = StatxFlags::TYPE
+        | StatxFlags::MODE
+        | StatxFlags::SIZE
+        | StatxFlags::MTIME
+        | StatxFlags::INO;
+    let stx = statx(CWD, path, AtFlags::SYMLINK_NOFOLLOW, mask)
+        .map_err(|e| Error::io(path, std::io::Error::from_raw_os_error(e.raw_os_error())))?;
+
+    let mode = u32::from(stx.stx_mode);
+    let kind = match mode & S_IFMT {
+        0o100_000 => FileTypeKind::File,
+        0o040_000 => FileTypeKind::Dir,
+        0o120_000 => FileTypeKind::Symlink,
+        _ => FileTypeKind::Other,
+    };
+    let mtime = FileTime::from_unix_time(stx.stx_mtime.tv_sec, stx.stx_mtime.tv_nsec as u32);
+    let dev = rustix::fs::makedev(stx.stx_dev_major, stx.stx_dev_minor);
+    Ok(MinMeta {
+        kind,
+        len: stx.stx_size,
+        mtime,
+        mode,
+        ino: stx.stx_ino,
+        dev,
+    })
+}
+
+/// Portable fallback using `symlink_metadata`.
+///
+/// # Errors
+///
+/// Returns an error if the path cannot be stat-ed.
+#[cfg(not(target_os = "linux"))]
+pub fn meta_min(path: &Path) -> Result<MinMeta> {
+    let meta = std::fs::symlink_metadata(path).map_err(|e| Error::io(path, e))?;
+    let ftype = meta.file_type();
+    let kind = if ftype.is_symlink() {
+        FileTypeKind::Symlink
+    } else if ftype.is_dir() {
+        FileTypeKind::Dir
+    } else if ftype.is_file() {
+        FileTypeKind::File
+    } else {
+        FileTypeKind::Other
+    };
+    #[cfg(unix)]
+    let (mode, ino, dev) = {
+        use std::os::unix::fs::MetadataExt;
+        (meta.mode(), meta.ino(), meta.dev())
+    };
+    #[cfg(not(unix))]
+    let (mode, ino, dev) = (0u32, 0u64, 0u64);
+    Ok(MinMeta {
+        kind,
+        len: meta.len(),
+        mtime: FileTime::from_last_modification_time(&meta),
+        mode,
+        ino,
+        dev,
+    })
+}
+
 /// Canonicalize `root`, creating it first if it does not yet exist.
 ///
 /// # Errors

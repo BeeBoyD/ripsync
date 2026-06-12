@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use globset::GlobSet;
+use rayon::prelude::*;
 
 use crate::walk::{Entry, EntryKind, walk};
 use crate::{Error, Result};
@@ -131,17 +132,21 @@ pub fn build_plan(
     let dst_map: HashMap<&Path, &Entry> =
         dst_entries.iter().map(|e| (e.rel.as_path(), e)).collect();
 
-    let mut actions = Vec::with_capacity(src_entries.len());
-    for entry in &src_entries {
-        let action = match dst_map.get(entry.rel.as_path()) {
-            None => Action::Copy,
-            Some(dst_entry) => classify_existing(src, dst, entry, dst_entry, opts.checksum),
-        };
-        actions.push(PlannedAction {
-            entry: entry.clone(),
-            action,
-        });
-    }
+    // Classify in parallel — the checksum path reads file contents, so spreading
+    // the work across cores matters; the size+mtime path is cheap either way.
+    let actions: Vec<PlannedAction> = src_entries
+        .par_iter()
+        .map(|entry| {
+            let action = match dst_map.get(entry.rel.as_path()) {
+                None => Action::Copy,
+                Some(dst_entry) => classify_existing(src, dst, entry, dst_entry, opts.checksum),
+            };
+            PlannedAction {
+                entry: entry.clone(),
+                action,
+            }
+        })
+        .collect();
 
     let mut deletions = Vec::new();
     if opts.delete {
