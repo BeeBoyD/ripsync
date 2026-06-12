@@ -8,7 +8,7 @@ use globset::GlobSetBuilder;
 
 use crate::apply::MetadataOptions;
 use crate::control::RunControl;
-use crate::index::FERRY_DIR;
+use crate::index::RIPSYNC_DIR;
 use crate::meta::{FileTypeKind, meta_min};
 use crate::plan::{Action, SyncPlan};
 use crate::report::{Event, Reporter, RunPhase};
@@ -226,7 +226,7 @@ pub fn verify<R: Reporter>(
             .filter_map(|planned| live_entry(dst, &planned.entry.rel).ok())
             .collect()
     };
-    destination_entries.retain(|entry| !entry.rel.starts_with(FERRY_DIR));
+    destination_entries.retain(|entry| !entry.rel.starts_with(RIPSYNC_DIR));
     let destination: HashMap<&Path, &Entry> = destination_entries
         .iter()
         .map(|entry| (entry.rel.as_path(), entry))

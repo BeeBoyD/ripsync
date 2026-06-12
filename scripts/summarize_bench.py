@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print count, median, and population standard deviation for Ferry benchmark CSV."""
+"""Print count, median, and population standard deviation for ripsync benchmark CSV."""
 
 import csv
 import statistics

@@ -497,7 +497,7 @@ fn prepare_paths(
     let parent = target
         .parent()
         .ok_or_else(|| Error::Containment(target.clone()))?;
-    let tmp = parent.join(format!(".ferry-tmp-{:016x}", rand::random::<u64>()));
+    let tmp = parent.join(format!(".ripsync-tmp-{:016x}", rand::random::<u64>()));
     Ok((target, tmp))
 }
 

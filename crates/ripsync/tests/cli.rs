@@ -9,8 +9,8 @@ use tempfile::tempdir;
 #[cfg(unix)]
 use std::os::unix::fs::{FileExt, MetadataExt};
 
-fn ferry() -> Command {
-    Command::cargo_bin("ferry").expect("binary builds")
+fn ripsync() -> Command {
+    Command::cargo_bin("ripsync").expect("binary builds")
 }
 
 fn write(path: &Path, contents: &str) {
@@ -28,7 +28,7 @@ fn basic_sync_mirrors_tree() {
     write(&src.join("a.txt"), "alpha");
     write(&src.join("nested/b.txt"), "beta");
 
-    ferry()
+    ripsync()
         .args([src.to_str().unwrap(), dst.to_str().unwrap(), "--no-tui"])
         .assert()
         .success();
@@ -47,7 +47,7 @@ fn dry_run_changes_nothing() {
     let dst = tmp.path().join("dst");
     write(&src.join("a.txt"), "alpha");
 
-    ferry()
+    ripsync()
         .args([
             src.to_str().unwrap(),
             dst.to_str().unwrap(),
@@ -69,7 +69,7 @@ fn delete_without_yes_deletes_nothing() {
     write(&dst.join("keep.txt"), "keep");
     write(&dst.join("stale.txt"), "stale");
 
-    ferry()
+    ripsync()
         .args([
             src.to_str().unwrap(),
             dst.to_str().unwrap(),
@@ -97,7 +97,7 @@ fn delete_with_yes_removes_stale() {
     write(&dst.join("keep.txt"), "keep");
     write(&dst.join("stale.txt"), "stale");
 
-    ferry()
+    ripsync()
         .args([
             src.to_str().unwrap(),
             dst.to_str().unwrap(),
@@ -123,7 +123,7 @@ fn empty_source_with_delete_aborts() {
     fs::create_dir_all(&src).unwrap();
     write(&dst.join("precious.txt"), "do not lose me");
 
-    ferry()
+    ripsync()
         .args([
             src.to_str().unwrap(),
             dst.to_str().unwrap(),
@@ -149,7 +149,7 @@ fn exclude_skips_matching_files() {
     write(&src.join("skip.log"), "log");
     write(&src.join("nested/deep.log"), "deep log");
 
-    ferry()
+    ripsync()
         .args([
             src.to_str().unwrap(),
             dst.to_str().unwrap(),
@@ -175,7 +175,7 @@ fn json_output_is_valid() {
     let dst = tmp.path().join("dst");
     write(&src.join("a.txt"), "alpha");
 
-    let out = ferry()
+    let out = ripsync()
         .args([
             src.to_str().unwrap(),
             dst.to_str().unwrap(),
@@ -198,12 +198,12 @@ fn json_output_is_valid() {
 
 #[test]
 fn unsupported_placeholder_flags_fail_immediately() {
-    ferry()
+    ripsync()
         .args(["src", "dst", "--bwlimit", "1M"])
         .assert()
         .failure()
         .stderr(predicates::str::contains("--bwlimit is not supported"));
-    ferry()
+    ripsync()
         .args(["src", "dst", "--partial"])
         .assert()
         .failure()
@@ -216,7 +216,7 @@ fn verify_changed_succeeds_and_all_detects_extra_entries() {
     let src = tmp.path().join("src");
     let dst = tmp.path().join("dst");
     write(&src.join("data"), "content");
-    ferry()
+    ripsync()
         .args([
             src.to_str().unwrap(),
             dst.to_str().unwrap(),
@@ -228,7 +228,7 @@ fn verify_changed_succeeds_and_all_detects_extra_entries() {
         .success();
 
     write(&dst.join("extra"), "not in source");
-    ferry()
+    ripsync()
         .args([
             src.to_str().unwrap(),
             dst.to_str().unwrap(),
@@ -248,13 +248,13 @@ fn index_detects_destination_modified_after_sync() {
     let dst = tmp.path().join("dst");
     write(&src.join("data.txt"), "source");
 
-    ferry()
+    ripsync()
         .args([src.to_str().unwrap(), dst.to_str().unwrap(), "--no-tui"])
         .assert()
         .success();
     write(&dst.join("data.txt"), "tampered destination");
 
-    ferry()
+    ripsync()
         .args([src.to_str().unwrap(), dst.to_str().unwrap(), "--no-tui"])
         .assert()
         .success();
@@ -269,7 +269,7 @@ fn resync_restores_parent_directory_mtime() {
     let dst = tmp.path().join("dst");
     write(&src.join("nested/data.txt"), "first");
 
-    ferry()
+    ripsync()
         .args([src.to_str().unwrap(), dst.to_str().unwrap(), "--no-tui"])
         .assert()
         .success();
@@ -277,7 +277,7 @@ fn resync_restores_parent_directory_mtime() {
     let source_mtime =
         filetime::FileTime::from_last_modification_time(&fs::metadata(src.join("nested")).unwrap());
 
-    ferry()
+    ripsync()
         .args([src.to_str().unwrap(), dst.to_str().unwrap(), "--no-tui"])
         .assert()
         .success();
@@ -294,14 +294,14 @@ fn corrupt_index_falls_back_to_full_scan() {
     let dst = tmp.path().join("dst");
     write(&src.join("data.txt"), "first");
 
-    ferry()
+    ripsync()
         .args([src.to_str().unwrap(), dst.to_str().unwrap(), "--no-tui"])
         .assert()
         .success();
-    write(&dst.join(".ferry/manifest.bin"), "not a manifest");
+    write(&dst.join(".ripsync/manifest.bin"), "not a manifest");
     write(&src.join("data.txt"), "second version");
 
-    ferry()
+    ripsync()
         .args([src.to_str().unwrap(), dst.to_str().unwrap(), "--no-tui"])
         .assert()
         .success();
@@ -321,7 +321,7 @@ fn hard_links_preserve_and_repair_inode_groups() {
     write(&src.join("original"), "shared");
     fs::hard_link(src.join("original"), src.join("alias")).unwrap();
 
-    ferry()
+    ripsync()
         .args([
             src.to_str().unwrap(),
             dst.to_str().unwrap(),
@@ -337,7 +337,7 @@ fn hard_links_preserve_and_repair_inode_groups() {
 
     fs::remove_file(dst.join("alias")).unwrap();
     write(&dst.join("alias"), "shared");
-    ferry()
+    ripsync()
         .args([
             src.to_str().unwrap(),
             dst.to_str().unwrap(),
@@ -364,7 +364,7 @@ fn sparse_copy_preserves_holes() {
     source.write_at(b"start", 0).unwrap();
     source.write_at(b"end", 64 * 1024 * 1024 - 3).unwrap();
 
-    ferry()
+    ripsync()
         .args([
             src.to_str().unwrap(),
             dst.to_str().unwrap(),
@@ -394,11 +394,11 @@ fn xattrs_round_trip_when_supported() {
     let src = tmp.path().join("src");
     let dst = tmp.path().join("dst");
     write(&src.join("data"), "content");
-    if xattr::set(src.join("data"), "user.ferry-test", b"value").is_err() {
+    if xattr::set(src.join("data"), "user.ripsync-test", b"value").is_err() {
         return;
     }
 
-    ferry()
+    ripsync()
         .args([
             src.to_str().unwrap(),
             dst.to_str().unwrap(),
@@ -409,7 +409,7 @@ fn xattrs_round_trip_when_supported() {
         .success();
 
     assert_eq!(
-        xattr::get(dst.join("data"), "user.ferry-test").unwrap(),
+        xattr::get(dst.join("data"), "user.ripsync-test").unwrap(),
         Some(b"value".to_vec())
     );
 }

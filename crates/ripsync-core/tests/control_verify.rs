@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use ferry_core::apply::{ApplyOptions, MetadataOptions, apply_plan_controlled};
-use ferry_core::plan::{PlanOptions, build_plan_controlled};
-use ferry_core::report::{Event, NullReporter, Reporter, RunPhase};
-use ferry_core::verify::{VerifyMode, verify};
-use ferry_core::{Error, RunControl};
 use globset::GlobSetBuilder;
+use ripsync_core::apply::{ApplyOptions, MetadataOptions, apply_plan_controlled};
+use ripsync_core::plan::{PlanOptions, build_plan_controlled};
+use ripsync_core::report::{Event, NullReporter, Reporter, RunPhase};
+use ripsync_core::verify::{VerifyMode, verify};
+use ripsync_core::{Error, RunControl};
 use tempfile::tempdir;
 
 fn write(path: &Path, contents: &[u8]) {
@@ -61,7 +61,8 @@ fn cancellation_after_an_in_flight_copy_leaves_no_temp_file() {
     let dst = temp.path().join("dst");
     write(&src.join("file"), &[7; 4096]);
     let excludes = GlobSetBuilder::new().build().unwrap();
-    let plan = ferry_core::plan::build_plan(&src, &dst, PlanOptions::default(), &excludes).unwrap();
+    let plan =
+        ripsync_core::plan::build_plan(&src, &dst, PlanOptions::default(), &excludes).unwrap();
     let control = RunControl::default();
     let reporter = CancelOn {
         control: control.clone(),
@@ -88,7 +89,7 @@ fn cancellation_after_an_in_flight_copy_leaves_no_temp_file() {
     assert!(
         names
             .iter()
-            .all(|name| !name.to_string_lossy().starts_with(".ferry-tmp-"))
+            .all(|name| !name.to_string_lossy().starts_with(".ripsync-tmp-"))
     );
 }
 
@@ -101,7 +102,7 @@ fn cancellation_before_deletion_keeps_stale_entry() {
     write(&dst.join("keep"), b"same");
     write(&dst.join("stale"), b"stale");
     let excludes = GlobSetBuilder::new().build().unwrap();
-    let plan = ferry_core::plan::build_plan(
+    let plan = ripsync_core::plan::build_plan(
         &src,
         &dst,
         PlanOptions {
@@ -141,7 +142,8 @@ fn verification_reports_content_mismatch_and_can_cancel() {
     write(&src.join("file"), b"source");
     write(&dst.join("file"), b"destination");
     let excludes = GlobSetBuilder::new().build().unwrap();
-    let plan = ferry_core::plan::build_plan(&src, &dst, PlanOptions::default(), &excludes).unwrap();
+    let plan =
+        ripsync_core::plan::build_plan(&src, &dst, PlanOptions::default(), &excludes).unwrap();
     let summary = verify(
         &plan,
         &src,

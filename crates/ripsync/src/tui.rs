@@ -11,18 +11,18 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ferry_core::apply::{ApplyOptions, MetadataOptions, apply_plan_controlled};
-use ferry_core::index::Manifest;
-use ferry_core::plan::{Action, PlanOptions, build_plan_controlled};
-use ferry_core::report::{Event, Reporter, RunPhase, RunStatus};
-use ferry_core::verify::{VerificationSummary, verify};
-use ferry_core::{Error, RunControl};
 use globset::GlobSet;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Tabs, Wrap};
+use ripsync_core::apply::{ApplyOptions, MetadataOptions, apply_plan_controlled};
+use ripsync_core::index::Manifest;
+use ripsync_core::plan::{Action, PlanOptions, build_plan_controlled};
+use ripsync_core::report::{Event, Reporter, RunPhase, RunStatus};
+use ripsync_core::verify::{VerificationSummary, verify};
+use ripsync_core::{Error, RunControl};
 
 use crate::args::Args;
 
@@ -46,7 +46,7 @@ impl Approval {
         wake.notify_all();
     }
 
-    fn wait(&self, control: &RunControl) -> ferry_core::Result<bool> {
+    fn wait(&self, control: &RunControl) -> ripsync_core::Result<bool> {
         let (lock, wake) = &*self.state;
         let mut decision = lock.lock().unwrap();
         while decision.is_none() {
@@ -336,7 +336,7 @@ fn spawn_worker(
     state: Arc<Mutex<TuiState>>,
     control: RunControl,
     approval: Approval,
-    result: mpsc::SyncSender<ferry_core::Result<()>>,
+    result: mpsc::SyncSender<ripsync_core::Result<()>>,
 ) {
     std::thread::spawn(move || {
         let reporter = TuiReporter {
@@ -363,7 +363,7 @@ fn run_worker<R: Reporter>(
     control: &RunControl,
     approval: &Approval,
     reporter: &R,
-) -> ferry_core::Result<()> {
+) -> ripsync_core::Result<()> {
     let plan = build_plan_controlled(
         &args.src,
         &args.dst,
@@ -569,7 +569,7 @@ fn draw(
             args.dst.display(),
             options
         ))
-        .block(Block::default().borders(Borders::ALL).title("Ferry 0.3")),
+        .block(Block::default().borders(Borders::ALL).title("ripsync 0.3")),
         chunks[0],
     );
     let entry_ratio = ratio(state.files_done, state.total_files as u64);
@@ -821,18 +821,18 @@ mod tests {
 
     #[test]
     fn renders_lifecycle_states_at_supported_sizes() {
-        let args = Args::parse_from(["ferry", "src", "dst", "--verify", "changed"]);
+        let args = Args::parse_from(["ripsync", "src", "dst", "--verify", "changed"]);
         for (width, height) in [(60, 18), (100, 30), (160, 45)] {
             for phase in [
-                ferry_core::RunPhase::Planning,
-                ferry_core::RunPhase::Review,
-                ferry_core::RunPhase::Copying,
-                ferry_core::RunPhase::Deleting,
-                ferry_core::RunPhase::Verifying,
-                ferry_core::RunPhase::Finalizing,
-                ferry_core::RunPhase::Done,
-                ferry_core::RunPhase::Cancelled,
-                ferry_core::RunPhase::Failed,
+                ripsync_core::RunPhase::Planning,
+                ripsync_core::RunPhase::Review,
+                ripsync_core::RunPhase::Copying,
+                ripsync_core::RunPhase::Deleting,
+                ripsync_core::RunPhase::Verifying,
+                ripsync_core::RunPhase::Finalizing,
+                ripsync_core::RunPhase::Done,
+                ripsync_core::RunPhase::Cancelled,
+                ripsync_core::RunPhase::Failed,
             ] {
                 let state = TuiState {
                     phase,
@@ -845,8 +845,8 @@ mod tests {
                 };
                 let ui = Ui {
                     tab: phase as usize % 4,
-                    help: phase == ferry_core::RunPhase::Planning,
-                    cancel_confirm: phase == ferry_core::RunPhase::Cancelled,
+                    help: phase == ripsync_core::RunPhase::Planning,
+                    cancel_confirm: phase == ripsync_core::RunPhase::Cancelled,
                     ..Ui::default()
                 };
                 let backend = TestBackend::new(width, height);

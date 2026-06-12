@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Ferry v0.3 scale benchmark. Generates the requested datasets, records raw CSV
+# ripsync v0.3 scale benchmark. Generates the requested datasets, records raw CSV
 # metrics, and verifies content plus mode/mtime/symlink metadata after every run.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FERRY="$ROOT/target/release/ferry"
-TINY_ROOT="${BENCH_TINY_ROOT:-/tmp/ferry-bench-v02}"
+RIPSYNC="$ROOT/target/release/ripsync"
+TINY_ROOT="${BENCH_TINY_ROOT:-/tmp/ripsync-bench-v02}"
 LARGE_ROOT="${BENCH_LARGE_ROOT:-$ROOT/.bench-large}"
 RESULTS="${BENCH_RESULTS:-$ROOT/bench-results.csv}"
 RUNS="${RUNS:-5}"
@@ -67,13 +67,13 @@ generate_large() {
 
 verify_tree() {
   local src="$1" dst="$2"
-  diff -rq --exclude=.ferry "$src" "$dst" >/dev/null
+  diff -rq --exclude=.ripsync "$src" "$dst" >/dev/null
   python3 - "$src" "$dst" <<'PY'
 import os, pathlib, stat, sys
 src, dst = map(pathlib.Path, sys.argv[1:])
 for base, dirs, files in os.walk(src, followlinks=False):
     rel_base = pathlib.Path(base).relative_to(src)
-    dirs[:] = [d for d in dirs if d != ".ferry"]
+    dirs[:] = [d for d in dirs if d != ".ripsync"]
     for name in dirs + files:
         rel = rel_base / name
         a, b = os.lstat(src / rel), os.lstat(dst / rel)
@@ -112,7 +112,7 @@ run_sync() {
   if [[ "$tool" == rsync ]]; then
     rsync -a "$src/" "$dst"
   else
-    "$FERRY" "$src" "$dst" --no-tui -q --backend "$backend"
+    "$RIPSYNC" "$src" "$dst" --no-tui -q --backend "$backend"
   fi
 }
 
@@ -120,7 +120,7 @@ bench_initial() {
   local cache="$1" scenario="$2" src="$3" files="$4" bytes="$5" dest_root="$6"
   local fs
   fs="$(findmnt -n -T "$dest_root" -o FSTYPE)"
-  for tool_backend in "ferry:uring" "ferry:portable" "rsync:none"; do
+  for tool_backend in "ripsync:uring" "ripsync:portable" "rsync:none"; do
     IFS=: read -r tool backend <<<"$tool_backend"
     for run in $(seq 1 "$RUNS"); do
       local dst="$dest_root/dst-${scenario}-${tool}-${backend}-${run}"
@@ -153,7 +153,7 @@ bench_resync() {
   local fs
   fs="$(findmnt -n -T "$TINY_ROOT" -o FSTYPE)"
   local serial=0
-  for tool_backend in "ferry:uring" "ferry:portable" "rsync:none"; do
+  for tool_backend in "ripsync:uring" "ripsync:portable" "rsync:none"; do
     IFS=: read -r tool backend <<<"$tool_backend"
     for run in $(seq 1 "$RUNS"); do
       serial=$((serial + 1))

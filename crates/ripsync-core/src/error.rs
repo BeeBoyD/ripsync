@@ -1,9 +1,9 @@
-//! Error types for `ferry-core`. Library code returns [`Result`]; it never
+//! Error types for `ripsync-core`. Library code returns [`Result`]; it never
 //! panics on bad input.
 
 use std::path::PathBuf;
 
-/// Convenience alias for results produced by `ferry-core`.
+/// Convenience alias for results produced by `ripsync-core`.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can arise while planning or applying a sync.

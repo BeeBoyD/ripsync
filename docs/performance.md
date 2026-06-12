@@ -4,13 +4,13 @@
 
 Performance claims must be based on release builds and raw CSV committed or
 attached to the release. Record hardware, kernel/OS, filesystem, cache state,
-Ferry revision, rsync version, allocator, backend, and durability settings.
+ripsync revision, rsync version, allocator, backend, and durability settings.
 Use at least five repetitions and report median plus population standard
 deviation. Do not label a run cold unless page-cache dropping succeeded.
 
 The v0.3 release gate is:
 
-- at least 15% lower median wall time than the v0.2 Ferry baseline for a
+- at least 15% lower median wall time than the v0.2 ripsync baseline for a
   1,000,000-file tree with 100 changed files;
 - no more than 5% regression in each existing initial-copy median.
 
@@ -28,20 +28,20 @@ The v0.3 suite ran five warm-cache repetitions per configuration on:
 
 | Scenario | Tool | Median | Population stddev | Change from prior |
 |---|---|---:|---:|---:|
-| 100k tiny, initial | Ferry uring | 0.568 s | 0.010 s | -17.9% |
-| 100k tiny, initial | Ferry portable | 0.688 s | 0.009 s | +96.2% |
+| 100k tiny, initial | ripsync uring | 0.568 s | 0.010 s | -17.9% |
+| 100k tiny, initial | ripsync portable | 0.688 s | 0.009 s | +96.2% |
 | 100k tiny, initial | rsync | 0.657 s | 0.004 s | -2.7% |
-| 1M tiny, initial | Ferry uring | 5.568 s | 0.129 s | -12.6% |
-| 1M tiny, initial | Ferry portable | 6.889 s | 0.152 s | +100.2% |
+| 1M tiny, initial | ripsync uring | 5.568 s | 0.129 s | -12.6% |
+| 1M tiny, initial | ripsync portable | 6.889 s | 0.152 s | +100.2% |
 | 1M tiny, initial | rsync | 6.065 s | 0.009 s | -3.4% |
-| 10 GiB / 500, initial | Ferry uring | 16.923 s | 1.739 s | -0.7% |
-| 10 GiB / 500, initial | Ferry portable | 18.281 s | 0.077 s | +29.8% |
+| 10 GiB / 500, initial | ripsync uring | 16.923 s | 1.739 s | -0.7% |
+| 10 GiB / 500, initial | ripsync portable | 18.281 s | 0.077 s | +29.8% |
 | 10 GiB / 500, initial | rsync | 22.701 s | 1.063 s | +16.3% |
-| 1M tree, 100 changed | Ferry uring | 1.328 s | 0.069 s | -60.1% |
-| 1M tree, 100 changed | Ferry portable | 1.414 s | 0.115 s | -58.2% |
+| 1M tree, 100 changed | ripsync uring | 1.328 s | 0.069 s | -60.1% |
+| 1M tree, 100 changed | ripsync portable | 1.414 s | 0.115 s | -58.2% |
 | 1M tree, 100 changed | rsync | 1.346 s | 0.038 s | -0.4% |
 
-Negative change is faster. The indexed re-sync target passes for both Ferry
+Negative change is faster. The indexed re-sync target passes for both ripsync
 backends. The initial-copy guardrail passes for uring but fails for portable,
 which is also the `auto` selection in v0.3. Therefore the complete release
 performance gate is not met.

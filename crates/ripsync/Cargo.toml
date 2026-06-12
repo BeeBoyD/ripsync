@@ -1,6 +1,6 @@
 [package]
-name = "ferry"
-description = "Ferry: a fast, memory-safe rsync alternative."
+name = "ripsync"
+description = "ripsync: a fast, memory-safe rsync alternative."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,11 +9,19 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "ferry"
+name = "ripsync"
 path = "src/main.rs"
 
+# Opt-in short alias `rs` (same entry point). NOT built by default because the
+# name collides with the BSD `rs` reshape utility; packagers enable it only
+# where it is safe. Build with: `cargo build --features rs-alias`.
+[[bin]]
+name = "rs"
+path = "src/rs.rs"
+required-features = ["rs-alias"]
+
 [dependencies]
-ferry-core = { path = "../ferry-core" }
+ripsync-core = { path = "../ripsync-core" }
 anyhow.workspace = true
 globset.workspace = true
 clap.workspace = true
@@ -30,6 +38,8 @@ mimalloc.workspace = true
 [features]
 # Use the system allocator instead of mimalloc.
 system-malloc = []
+# Build the opt-in `rs` short-alias binary (see [[bin]] above).
+rs-alias = []
 
 [dev-dependencies]
 assert_cmd.workspace = true
