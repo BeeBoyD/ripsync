@@ -3,8 +3,9 @@
 //! it is never installed by default).
 
 /// Global allocator: mimalloc, matching the `ripsync` binary. Opt out with
-/// `--features system-malloc`. Must live in the binary crate root.
-#[cfg(not(feature = "system-malloc"))]
+/// `--features system-malloc` (or `--no-default-features`). Must live in the
+/// binary crate root.
+#[cfg(all(feature = "mimalloc", not(feature = "system-malloc")))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

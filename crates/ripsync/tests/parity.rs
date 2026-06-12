@@ -6,6 +6,10 @@
 //! structure, content, modes, mtimes (±1s), and symlink targets.
 //!
 //! If `rsync` is not installed the tests no-op (they print a note and pass).
+//!
+//! The harness uses POSIX permissions and symlinks throughout, so it is gated to
+//! Unix; on Windows the parity suite compiles to nothing (and CI skips it).
+#![cfg(unix)]
 
 use std::collections::BTreeMap;
 use std::fs;

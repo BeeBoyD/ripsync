@@ -192,7 +192,14 @@ fn json_output_is_valid() {
     let parsed: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
     assert_eq!(parsed["summary"]["copied"], 1);
     assert_eq!(parsed["status"], "success");
-    assert_eq!(parsed["backend"]["selected"], "portable");
+    // `auto` resolves to the portable ladder on POSIX and the block-clone /
+    // CopyFileExW backend on Windows.
+    let expected_backend = if cfg!(windows) {
+        "refs/copyfileex"
+    } else {
+        "portable"
+    };
+    assert_eq!(parsed["backend"]["selected"], expected_backend);
     assert!(parsed["phase_timings_ms"].is_object());
 }
 
