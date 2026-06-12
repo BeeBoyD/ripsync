@@ -4,3 +4,7 @@
 /bench-data
 /.bench-large
 Cargo.lock.bak
+
+# session/tooling cruft
+/.serena
+0.3-codex.md

@@ -9,6 +9,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Errors that can arise while planning or applying a sync.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The run was cancelled cooperatively.
+    #[error("run cancelled")]
+    Cancelled,
+
     /// An underlying I/O failure, annotated with the offending path.
     #[error("I/O error at {path}: {source}")]
     Io {
@@ -37,6 +41,10 @@ pub enum Error {
     /// A delta could not be applied to the supplied basis.
     #[error("delta apply failed: {0}")]
     DeltaApply(String),
+
+    /// Verification found one or more mismatches.
+    #[error("verification failed with {0} mismatch(es)")]
+    Verification(usize),
 }
 
 impl Error {

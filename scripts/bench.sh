@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ferry v0.2 scale benchmark. Generates the requested datasets, records raw CSV
+# Ferry v0.3 scale benchmark. Generates the requested datasets, records raw CSV
 # metrics, and verifies content plus mode/mtime/symlink metadata after every run.
 set -euo pipefail
 
@@ -8,7 +8,7 @@ FERRY="$ROOT/target/release/ferry"
 TINY_ROOT="${BENCH_TINY_ROOT:-/tmp/ferry-bench-v02}"
 LARGE_ROOT="${BENCH_LARGE_ROOT:-$ROOT/.bench-large}"
 RESULTS="${BENCH_RESULTS:-$ROOT/bench-results.csv}"
-RUNS="${RUNS:-1}"
+RUNS="${RUNS:-5}"
 CACHE_MODE="${CACHE_MODE:-warm}" # warm, cold, or both
 SCENARIOS="${BENCH_SCENARIOS:-tiny-100k,tiny-1m,large-10gib,resync}"
 

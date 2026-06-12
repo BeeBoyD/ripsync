@@ -8,8 +8,9 @@ use globset::GlobSet;
 use rayon::prelude::*;
 
 use crate::index::{FERRY_DIR, Manifest};
-use crate::walk::{Entry, EntryKind, walk};
-use crate::{Error, Result};
+use crate::report::{Event, NullReporter, Reporter, RunPhase};
+use crate::walk::{Entry, EntryKind, walk_controlled};
+use crate::{Error, Result, RunControl};
 
 /// What Ferry intends to do with a single entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,7 +126,36 @@ pub fn build_plan(
     opts: PlanOptions,
     excludes: &GlobSet,
 ) -> Result<SyncPlan> {
-    let mut src_entries = walk(src, opts.threads, excludes)?;
+    build_plan_controlled(
+        src,
+        dst,
+        opts,
+        excludes,
+        &RunControl::default(),
+        &NullReporter,
+    )
+}
+
+/// Build a plan with cooperative control and lifecycle reporting.
+///
+/// # Errors
+///
+/// Returns an I/O, containment, empty-source, or cancellation error.
+pub fn build_plan_controlled<R: Reporter>(
+    src: &Path,
+    dst: &Path,
+    opts: PlanOptions,
+    excludes: &GlobSet,
+    control: &RunControl,
+    reporter: &R,
+) -> Result<SyncPlan> {
+    reporter.event(Event::Phase(RunPhase::Planning));
+    control.checkpoint()?;
+    let mut src_entries = walk_controlled(src, opts.threads, excludes, control)?;
+    control.checkpoint()?;
+    reporter.event(Event::PlanningProgress {
+        entries: src_entries.len(),
+    });
     // Never sync or delete Ferry's own metadata directory at the dst root.
     src_entries.retain(|e| !e.rel.starts_with(FERRY_DIR));
 
@@ -142,10 +172,14 @@ pub fn build_plan(
     }
 
     let mut dst_entries = if dst.exists() {
-        walk(dst, opts.threads, excludes)?
+        walk_controlled(dst, opts.threads, excludes, control)?
     } else {
         Vec::new()
     };
+    control.checkpoint()?;
+    reporter.event(Event::PlanningProgress {
+        entries: src_entries.len() + dst_entries.len(),
+    });
     dst_entries.retain(|e| !e.rel.starts_with(FERRY_DIR));
     let dst_map: HashMap<&Path, &Entry> =
         dst_entries.iter().map(|e| (e.rel.as_path(), e)).collect();
