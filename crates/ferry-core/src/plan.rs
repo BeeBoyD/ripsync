@@ -97,16 +97,18 @@ fn files_differ(
     dst: &Entry,
     checksum: bool,
 ) -> bool {
+    let metadata_differs = entry.mode & 0o7777 != dst.mode & 0o7777
+        || entry.mtime.unix_seconds() != dst.mtime.unix_seconds();
     if checksum {
         let sp = src_root.join(&entry.rel);
         let dp = dst_root.join(&dst.rel);
         match (file_hash(&sp), file_hash(&dp)) {
-            (Some(a), Some(b)) => a != b,
+            (Some(a), Some(b)) => metadata_differs || a != b,
             _ => true,
         }
     } else {
         // Quick check: size, then mtime at whole-second resolution.
-        entry.len != dst.len || entry.mtime.unix_seconds() != dst.mtime.unix_seconds()
+        entry.len != dst.len || metadata_differs
     }
 }
 
@@ -260,9 +262,17 @@ fn classify_existing(
     checksum: bool,
 ) -> Action {
     match (&entry.kind, &dst_entry.kind) {
-        (EntryKind::Dir, EntryKind::Dir) => Action::Skip,
+        (EntryKind::Dir, EntryKind::Dir) => {
+            if entry.mode & 0o7777 == dst_entry.mode & 0o7777
+                && entry.mtime.unix_seconds() == dst_entry.mtime.unix_seconds()
+            {
+                Action::Skip
+            } else {
+                Action::Update
+            }
+        }
         (EntryKind::Symlink(a), EntryKind::Symlink(b)) => {
-            if a == b {
+            if a == b && entry.mtime.unix_seconds() == dst_entry.mtime.unix_seconds() {
                 Action::Skip
             } else {
                 Action::Update

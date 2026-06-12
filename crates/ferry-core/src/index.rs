@@ -18,7 +18,7 @@ use crate::walk::{Entry, EntryKind};
 pub const FERRY_DIR: &str = ".ferry";
 /// Manifest filename within [`FERRY_DIR`].
 pub const MANIFEST_FILE: &str = "manifest.bin";
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 
 /// Recorded manifest entry kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +46,8 @@ pub struct ManifestEntry {
     pub ino: u64,
     /// Destination device id.
     pub dev: u64,
+    /// Permission and type bits.
+    pub mode: u32,
     /// Strong hash, when the manifest was created with `--checksum`.
     pub hash: Option<[u8; 32]>,
     /// Symlink target, for symlinks.
@@ -127,11 +129,12 @@ impl Manifest {
                 entry.rel.clone(),
                 ManifestEntry {
                     kind,
-                    size: meta.len,
+                    size: entry.len,
                     mtime_s: meta.mtime.unix_seconds(),
                     mtime_ns: meta.mtime.nanoseconds(),
                     ino: meta.ino,
                     dev: meta.dev,
+                    mode: meta.mode,
                     hash,
                     target,
                 },
@@ -189,17 +192,19 @@ impl Manifest {
         let destination = dst.join(&entry.rel);
         match (&entry.kind, recorded.kind) {
             (EntryKind::Dir, Kind::Dir) => {
-                action_from_match(destination_matches(recorded, &destination, None))
+                let source_matches = metadata_matches(entry, recorded);
+                action_from_match(
+                    source_matches && destination_matches(recorded, &destination, None),
+                )
             }
             (EntryKind::Symlink(target), Kind::Symlink) => {
                 let matches = recorded.target.as_ref() == Some(target)
+                    && metadata_matches(entry, recorded)
                     && destination_matches(recorded, &destination, Some(target));
                 action_from_match(matches)
             }
             (EntryKind::File, Kind::File) => {
-                let source_matches = entry.len == recorded.size
-                    && entry.mtime.unix_seconds() == recorded.mtime_s
-                    && entry.mtime.nanoseconds() == recorded.mtime_ns;
+                let source_matches = metadata_matches(entry, recorded);
                 if !source_matches || !destination_matches(recorded, &destination, None) {
                     return Action::Update;
                 }
@@ -215,6 +220,13 @@ impl Manifest {
             _ => Action::Update,
         }
     }
+}
+
+fn metadata_matches(entry: &Entry, recorded: &ManifestEntry) -> bool {
+    entry.len == recorded.size
+        && entry.mtime.unix_seconds() == recorded.mtime_s
+        && entry.mtime.nanoseconds() == recorded.mtime_ns
+        && entry.mode & 0o7777 == recorded.mode & 0o7777
 }
 
 fn action_from_match(matches: bool) -> Action {
@@ -242,10 +254,10 @@ fn destination_matches(
     if !kind_matches || meta.ino != recorded.ino || meta.dev != recorded.dev {
         return false;
     }
-    if recorded.kind == Kind::File
-        && (meta.len != recorded.size
-            || meta.mtime.unix_seconds() != recorded.mtime_s
-            || meta.mtime.nanoseconds() != recorded.mtime_ns)
+    if (recorded.kind == Kind::File && meta.len != recorded.size)
+        || meta.mtime.unix_seconds() != recorded.mtime_s
+        || meta.mtime.nanoseconds() != recorded.mtime_ns
+        || meta.mode & 0o7777 != recorded.mode & 0o7777
     {
         return false;
     }

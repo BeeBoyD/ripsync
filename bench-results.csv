@@ -1,0 +1,13 @@
+cache,scenario,tool,seconds,files,bytes,files_per_sec,gib_per_sec,filesystem
+warm,tiny-100k,ferry-uring,0.692143,100000,1700000,144478.85,0.002287,tmpfs
+warm,tiny-100k,ferry-portable,0.350664,100000,1700000,285173.36,0.004515,tmpfs
+warm,tiny-100k,rsync-none,0.675341,100000,1700000,148073.31,0.002344,tmpfs
+warm,tiny-1m,ferry-uring,6.372019,1000000,17000000,156936.12,0.002485,tmpfs
+warm,tiny-1m,ferry-portable,3.440473,1000000,17000000,290657.73,0.004602,tmpfs
+warm,tiny-1m,rsync-none,6.281808,1000000,17000000,159189.85,0.002520,tmpfs
+warm,large-10gib,ferry-uring,17.037399,500,10737418240,29.35,0.586944,fuseblk
+warm,large-10gib,ferry-portable,14.087338,500,10737418240,35.49,0.709857,fuseblk
+warm,large-10gib,rsync-none,19.527220,500,10737418240,25.61,0.512106,fuseblk
+warm,resync-1m-100-changed,ferry-uring,3.330000,1000000,17000000,300300.29,0.004754,tmpfs
+warm,resync-1m-100-changed,ferry-portable,3.385926,1000000,17000000,295340.14,0.004676,tmpfs
+warm,resync-1m-100-changed,rsync-none,1.352073,1000000,17000000,739605.01,0.011710,tmpfs

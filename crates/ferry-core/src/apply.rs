@@ -166,15 +166,19 @@ fn apply_real<R: Reporter>(
 ) -> Result<()> {
     let root_canon = canonical_root(dst)?;
 
-    // Partition work by kind. Directories and symlinks run sequentially (cheap,
-    // and dirs must exist before their children); files run in parallel.
+    // Partition work by kind. Directories are batched by depth, files run in
+    // parallel, and symlinks run sequentially.
     let mut dirs: Vec<&Entry> = Vec::new();
+    let mut mtime_dirs: Vec<&Entry> = Vec::new();
     let mut files: Vec<(&Entry, Action)> = Vec::new();
     let mut hardlinks: Vec<(&Entry, Action, PathBuf)> = Vec::new();
     let mut symlinks: Vec<(&Entry, Action)> = Vec::new();
     let mut first_hardlink: HashMap<(u64, u64), PathBuf> = HashMap::new();
 
     for pa in &plan.actions {
+        if pa.entry.is_dir() {
+            mtime_dirs.push(&pa.entry);
+        }
         if opts.metadata.hard_links && pa.entry.is_file() {
             let id = (pa.entry.dev, pa.entry.ino);
             if let Some(canonical) = first_hardlink.get(&id) {
@@ -206,11 +210,16 @@ fn apply_real<R: Reporter>(
         }
     }
 
-    // 1. Directories, parent-first (actions are already sorted by rel path).
-    create_directories(&dirs, src, dst, &root_canon, opts, reporter, counters);
+    let pool = build_pool(opts.threads);
+
+    // 1. Directories, parent-depth batches. Peers at one depth are independent.
+    let run_dirs = || create_directories(&dirs, src, dst, &root_canon, opts, reporter, counters);
+    match &pool {
+        Some(thread_pool) => thread_pool.install(run_dirs),
+        None => run_dirs(),
+    }
 
     // 2. Files.
-    let pool = build_pool(opts.threads);
     let run_files = || copy_files(&files, src, &root_canon, opts, reporter, counters);
     match &pool {
         Some(p) => p.install(run_files),
@@ -237,7 +246,7 @@ fn apply_real<R: Reporter>(
     }
 
     // 5. Directory mtimes last (deepest first) — children writes bump parent times.
-    for entry in dirs.iter().rev() {
+    for entry in mtime_dirs.iter().rev() {
         let target = root_canon.join(&entry.rel);
         let _ = set_mtime(&target, entry.mtime);
     }
@@ -265,53 +274,73 @@ fn create_directories<R: Reporter>(
     reporter: &R,
     counters: &Counters,
 ) {
-    for entry in dirs {
-        let action = action_for_existing(dst, entry);
-        let target = root_canon.join(&entry.rel);
-        if let Ok(meta) = std::fs::symlink_metadata(&target) {
-            if !meta.is_dir() {
-                if let Err(error) =
-                    std::fs::remove_file(&target).map_err(|error| Error::io(&target, error))
-                {
-                    report_fail(reporter, counters, &entry.rel, &error);
-                    continue;
-                }
+    let mut start = 0;
+    while start < dirs.len() {
+        let depth = dirs[start].rel.components().count();
+        let end = dirs[start..]
+            .iter()
+            .position(|entry| entry.rel.components().count() != depth)
+            .map_or(dirs.len(), |offset| start + offset);
+        dirs[start..end].par_iter().for_each(|entry| {
+            create_directory(entry, src, dst, root_canon, opts, reporter, counters);
+        });
+        start = end;
+    }
+}
+
+fn create_directory<R: Reporter>(
+    entry: &Entry,
+    src: &Path,
+    dst: &Path,
+    root_canon: &Path,
+    opts: ApplyOptions,
+    reporter: &R,
+    counters: &Counters,
+) {
+    let action = action_for_existing(dst, entry);
+    let target = root_canon.join(&entry.rel);
+    if let Ok(meta) = std::fs::symlink_metadata(&target) {
+        if !meta.is_dir() {
+            if let Err(error) =
+                std::fs::remove_file(&target).map_err(|error| Error::io(&target, error))
+            {
+                report_fail(reporter, counters, &entry.rel, &error);
+                return;
             }
         }
-        if let Err(error) =
-            std::fs::create_dir_all(&target).map_err(|error| Error::io(&target, error))
-        {
-            report_fail(reporter, counters, &entry.rel, &error);
-            continue;
-        }
-        let result = contained_target(root_canon, &target).and_then(|contained| {
-            let source = src.join(&entry.rel);
-            set_owner_group(
-                &contained,
-                entry.uid,
-                entry.gid,
-                opts.metadata.owner,
-                opts.metadata.group,
-                true,
-            )?;
-            set_mode(&contained, entry.mode)?;
-            copy_xattrs(
-                &source,
-                &contained,
-                opts.metadata.xattrs,
-                opts.metadata.acls,
-            )
-        });
-        if let Err(error) = result {
-            report_fail(reporter, counters, &entry.rel, &error);
-            continue;
-        }
-        reporter.event(Event::DirDone {
-            rel: entry.rel.clone(),
-            action,
-        });
-        counters.bump_action(action);
     }
+    if let Err(error) = std::fs::create_dir_all(&target).map_err(|error| Error::io(&target, error))
+    {
+        report_fail(reporter, counters, &entry.rel, &error);
+        return;
+    }
+    let result = contained_target(root_canon, &target).and_then(|contained| {
+        let source = src.join(&entry.rel);
+        set_owner_group(
+            &contained,
+            entry.uid,
+            entry.gid,
+            opts.metadata.owner,
+            opts.metadata.group,
+            true,
+        )?;
+        set_mode(&contained, entry.mode)?;
+        copy_xattrs(
+            &source,
+            &contained,
+            opts.metadata.xattrs,
+            opts.metadata.acls,
+        )
+    });
+    if let Err(error) = result {
+        report_fail(reporter, counters, &entry.rel, &error);
+        return;
+    }
+    reporter.event(Event::DirDone {
+        rel: entry.rel.clone(),
+        action,
+    });
+    counters.bump_action(action);
 }
 
 /// Fsync every directory that received a create/rename, once each, so the

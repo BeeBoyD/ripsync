@@ -212,6 +212,31 @@ fn index_detects_destination_modified_after_sync() {
 }
 
 #[test]
+fn resync_restores_parent_directory_mtime() {
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    write(&src.join("nested/data.txt"), "first");
+
+    ferry()
+        .args([src.to_str().unwrap(), dst.to_str().unwrap(), "--no-tui"])
+        .assert()
+        .success();
+    write(&src.join("nested/data.txt"), "second version");
+    let source_mtime =
+        filetime::FileTime::from_last_modification_time(&fs::metadata(src.join("nested")).unwrap());
+
+    ferry()
+        .args([src.to_str().unwrap(), dst.to_str().unwrap(), "--no-tui"])
+        .assert()
+        .success();
+
+    let destination_mtime =
+        filetime::FileTime::from_last_modification_time(&fs::metadata(dst.join("nested")).unwrap());
+    assert_eq!(source_mtime, destination_mtime);
+}
+
+#[test]
 fn corrupt_index_falls_back_to_full_scan() {
     let tmp = tempdir().unwrap();
     let src = tmp.path().join("src");

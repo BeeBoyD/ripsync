@@ -2,4 +2,5 @@
 **/*.rs.bk
 *.profraw
 /bench-data
+/.bench-large
 Cargo.lock.bak
