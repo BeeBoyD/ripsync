@@ -569,7 +569,7 @@ fn draw(
             args.dst.display(),
             options
         ))
-        .block(Block::default().borders(Borders::ALL).title("ripsync 0.3")),
+        .block(Block::default().borders(Borders::ALL).title("ripsync 0.4")),
         chunks[0],
     );
     let entry_ratio = ratio(state.files_done, state.total_files as u64);

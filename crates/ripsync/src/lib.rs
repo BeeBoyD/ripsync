@@ -105,10 +105,10 @@ fn run() -> Result<()> {
     config::apply_defaults(&mut args, &matches);
 
     if args.bwlimit.is_some() {
-        bail!("--bwlimit is not supported in ripsync 0.3");
+        bail!("--bwlimit is not supported in ripsync 0.4");
     }
     if args.partial {
-        bail!("--partial is not supported in ripsync 0.3");
+        bail!("--partial is not supported in ripsync 0.4");
     }
 
     let threads = args.thread_count();
