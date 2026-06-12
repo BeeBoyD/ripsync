@@ -1,0 +1,44 @@
+# Maintainer: ripsync contributors <ionescudan888@gmail.com>
+pkgname=ripsync
+pkgver=0.4.0
+pkgrel=1
+pkgdesc="A fast, memory-safe local directory sync tool — rsync's superpower, none of its footguns"
+arch=('x86_64' 'aarch64')
+url="https://github.com/beeboyd/ripsync"
+license=('MIT' 'Apache-2.0')
+depends=('gcc-libs')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/beeboyd/ripsync/archive/refs/tags/v$pkgver.tar.gz")
+# Replace with the real digest at publish time: `updpkgsums`.
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release -p ripsync
+    cargo run --frozen --release -p xtask -- dist-assets
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo test --frozen --release --workspace
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+    install -Dm644 "dist/assets/ripsync.1" "$pkgdir/usr/share/man/man1/ripsync.1"
+    install -Dm644 "dist/assets/ripsync.bash" "$pkgdir/usr/share/bash-completion/completions/ripsync"
+    install -Dm644 "dist/assets/ripsync.fish" "$pkgdir/usr/share/fish/vendor_completions.d/ripsync.fish"
+    install -Dm644 "dist/assets/_ripsync" "$pkgdir/usr/share/zsh/site-functions/_ripsync"
+    install -Dm644 "LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+    install -Dm644 "LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}
