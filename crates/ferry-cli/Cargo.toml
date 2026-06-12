@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 ferry-core = { path = "../ferry-core" }
 anyhow.workspace = true
+globset.workspace = true
 clap.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true

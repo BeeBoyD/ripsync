@@ -416,6 +416,7 @@ dependencies = [
  "clap",
  "crossterm",
  "ferry-core",
+ "globset",
  "num_cpus",
  "predicates",
  "ratatui",
