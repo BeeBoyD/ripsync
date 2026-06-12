@@ -4,11 +4,12 @@
 //! over [`main`], so the entire program lives here in the library.
 
 pub mod args;
+mod config;
 mod reporter;
 mod tui;
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use ripsync_core::apply::{ApplyOptions, MetadataOptions, apply_plan_controlled};
@@ -25,7 +26,6 @@ use reporter::CliReporter;
 /// shell-completion generators (the hidden `_gen` subcommand and the `xtask`).
 #[must_use]
 pub fn command() -> clap::Command {
-    use clap::CommandFactory;
     Args::command()
 }
 
@@ -97,8 +97,12 @@ fn run() -> Result<()> {
         return run_gen(&raw[2..]);
     }
 
-    let args = Args::parse();
+    // Parse via matches so we can tell which flags were given on the command
+    // line, then layer config-file defaults under them.
+    let matches = Args::command().get_matches();
+    let mut args = Args::from_arg_matches(&matches)?;
     init_tracing(args.verbose);
+    config::apply_defaults(&mut args, &matches);
 
     if args.bwlimit.is_some() {
         bail!("--bwlimit is not supported in ripsync 0.3");
@@ -120,6 +124,7 @@ fn run() -> Result<()> {
 
     let reporter = CliReporter::new(args.output, args.quiet, args.verbose, args.dry_run);
     let control = RunControl::default();
+    let started = std::time::Instant::now();
     let plan = build_plan_controlled(
         &args.src,
         &args.dst,
@@ -233,6 +238,10 @@ fn run() -> Result<()> {
         &verification,
     );
 
+    if args.stats {
+        print_stats(&args, &stats, &verification, started.elapsed());
+    }
+
     if !verification.mismatches.is_empty() {
         return Err(Error::Verification(verification.mismatches.len()).into());
     }
@@ -240,6 +249,54 @@ fn run() -> Result<()> {
         bail!("sync completed with {} per-entry error(s)", stats.errors);
     }
     Ok(())
+}
+
+/// Print a compact, color-free summary block for `--stats` (non-TUI runs).
+fn print_stats(
+    args: &Args,
+    stats: &ripsync_core::report::Stats,
+    verification: &VerificationSummary,
+    elapsed: std::time::Duration,
+) {
+    let backend = match args.backend {
+        args::BackendArg::Auto => "auto",
+        args::BackendArg::Uring => "uring",
+        args::BackendArg::Portable => "portable",
+    };
+    println!(
+        "stats: copied {} updated {} skipped {} deleted {} errors {}",
+        stats.copied, stats.updated, stats.skipped, stats.deleted, stats.errors
+    );
+    println!(
+        "stats: {} in {:.3}s ({} backend, {} threads)",
+        human_bytes(stats.bytes),
+        elapsed.as_secs_f64(),
+        backend,
+        args.thread_count(),
+    );
+    if !verification.mismatches.is_empty() {
+        println!(
+            "stats: {} verification mismatch(es)",
+            verification.mismatches.len()
+        );
+    }
+}
+
+/// Format a byte count with a binary unit suffix.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    #[allow(clippy::cast_precision_loss)]
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.2} {}", UNITS[unit])
+    }
 }
 
 /// Compile exclude globs. Each pattern matches both at the root and nested

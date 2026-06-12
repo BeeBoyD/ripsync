@@ -61,3 +61,28 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p ripsync --no-default-features --features system-malloc
       - run: cargo build -p ripsync --features system-malloc
+
+  # Supply-chain: advisories, licenses, and dependency bans.
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
+
+  # Enforce the unsafe-isolation invariant: raw `unsafe` blocks may only appear
+  # in the two platform IO modules.
+  unsafe-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No unsafe outside io/uring.rs and io/windows.rs
+        run: |
+          offenders=$(grep -rln "unsafe {" crates/ripsync-core/src --include='*.rs' \
+            | grep -vE 'io/(uring|windows)\.rs' || true)
+          if [ -n "$offenders" ]; then
+            echo "::error::unexpected unsafe blocks in:"; echo "$offenders"; exit 1
+          fi
+          echo "unsafe blocks by file:"
+          grep -rc "unsafe {" crates/ripsync-core/src/io/uring.rs crates/ripsync-core/src/io/windows.rs

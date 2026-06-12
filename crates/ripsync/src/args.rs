@@ -113,6 +113,11 @@ pub struct Args {
     /// Quiet: suppress per-entry output.
     #[arg(short = 'q', long)]
     pub quiet: bool,
+
+    /// Print a final summary block (counts, bytes, backend, elapsed) for
+    /// non-TUI runs, even with `--quiet`. Honors `NO_COLOR` and piping.
+    #[arg(long)]
+    pub stats: bool,
 }
 
 /// How to render output.

@@ -4,6 +4,7 @@
 
 - [Quick start](quick-start.md)
 - [Installation](install.md)
+- [Configuration](config.md)
 - [TUI workflow](tui.md)
 - [Safety model](safety.md)
 - [Verification](verification.md)
