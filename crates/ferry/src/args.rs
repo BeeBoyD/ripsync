@@ -51,6 +51,10 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = BackendArg::Auto)]
     pub backend: BackendArg,
 
+    /// Disable the persistent destination index used for fast incremental runs.
+    #[arg(long = "no-index", action = clap::ArgAction::SetFalse, default_value_t = true)]
+    pub index: bool,
+
     /// Exclude paths matching this glob (repeatable).
     #[arg(long, value_name = "PAT")]
     pub exclude: Vec<String>,

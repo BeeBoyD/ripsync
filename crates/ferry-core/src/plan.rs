@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use globset::GlobSet;
 use rayon::prelude::*;
 
+use crate::index::{FERRY_DIR, Manifest};
 use crate::walk::{Entry, EntryKind, walk};
 use crate::{Error, Result};
 
@@ -48,6 +49,8 @@ pub struct PlanOptions {
     pub delete: bool,
     /// Worker threads for the walk (0 ⇒ default).
     pub threads: usize,
+    /// Use the persistent index (manifest) for fast incremental re-syncs.
+    pub index: bool,
 }
 
 /// The full plan: per-entry actions plus pending deletions.
@@ -117,18 +120,28 @@ pub fn build_plan(
     opts: PlanOptions,
     excludes: &GlobSet,
 ) -> Result<SyncPlan> {
-    let src_entries = walk(src, opts.threads, excludes)?;
+    let mut src_entries = walk(src, opts.threads, excludes)?;
+    // Never sync or delete Ferry's own metadata directory at the dst root.
+    src_entries.retain(|e| !e.rel.starts_with(FERRY_DIR));
 
     // Empty-source guard: never mirror deletions from nothing.
     if opts.delete && src_entries.is_empty() {
         return Err(Error::EmptySource(src.to_path_buf()));
     }
 
-    let dst_entries = if dst.exists() {
+    // `--delete` still needs a live walk to discover files created outside Ferry.
+    if opts.index && !opts.delete {
+        if let Some(manifest) = Manifest::load(dst) {
+            return Ok(plan_from_manifest(src, dst, &src_entries, &manifest, opts));
+        }
+    }
+
+    let mut dst_entries = if dst.exists() {
         walk(dst, opts.threads, excludes)?
     } else {
         Vec::new()
     };
+    dst_entries.retain(|e| !e.rel.starts_with(FERRY_DIR));
     let dst_map: HashMap<&Path, &Entry> =
         dst_entries.iter().map(|e| (e.rel.as_path(), e)).collect();
 
@@ -164,6 +177,41 @@ pub fn build_plan(
     }
 
     Ok(SyncPlan { actions, deletions })
+}
+
+/// Build a plan by diffing the source against the persistent index, skipping the
+/// destination walk entirely. Deletions are manifest entries no longer in source
+/// (apply still containment-checks every removal).
+fn plan_from_manifest(
+    src: &Path,
+    dst: &Path,
+    src_entries: &[Entry],
+    manifest: &Manifest,
+    opts: PlanOptions,
+) -> SyncPlan {
+    let actions: Vec<PlannedAction> = src_entries
+        .par_iter()
+        .map(|entry| PlannedAction {
+            entry: entry.clone(),
+            action: manifest.classify(entry, opts.checksum, src, dst),
+        })
+        .collect();
+
+    let mut deletions = Vec::new();
+    if opts.delete {
+        let src_set: HashSet<&Path> = src_entries.iter().map(|e| e.rel.as_path()).collect();
+        for (rel, rec) in &manifest.entries {
+            if !src_set.contains(rel.as_path()) {
+                deletions.push(Deletion {
+                    rel: rel.clone(),
+                    is_dir: rec.kind == crate::index::Kind::Dir,
+                });
+            }
+        }
+        deletions.sort_by(|a, b| b.rel.cmp(&a.rel));
+    }
+
+    SyncPlan { actions, deletions }
 }
 
 /// Classify a source entry whose path also exists in the destination.

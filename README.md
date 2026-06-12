@@ -44,6 +44,8 @@ ferry <SRC> <DST> [FLAGS]
 | `--delta` | Force delta transfer even locally (demo/bench). |
 | `--reflink <auto\|always\|never>` | Copy-on-write clone on CoW filesystems (btrfs/XFS/APFS/ReFS). `auto` tries it and falls back; `always` requires it; `never` skips it. |
 | `--fsync <auto\|always\|never>` | Durability vs speed. `auto`/`never` skip per-file fsync; `auto` still fsyncs touched directories once so renames survive a crash; `always` fsyncs every file before rename (slowest, strongest). |
+| `--backend <auto\|uring\|portable>` | Copy backend. `auto` uses io_uring on Linux when available. |
+| `--no-index` | Disable the default persistent destination index for incremental re-syncs. |
 | `--exclude <PAT>` | Glob, repeatable. |
 | `--bwlimit <RATE>` | Throttle (parsed now, enforced later). |
 | `--partial` | Keep partial files for resume (later phase). |

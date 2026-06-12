@@ -15,6 +15,7 @@ use clap::Parser;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use ferry_core::apply::{ApplyOptions, apply_plan};
+use ferry_core::index::Manifest;
 use ferry_core::plan::{PlanOptions, build_plan};
 
 use args::{Args, OutputFormat};
@@ -41,6 +42,7 @@ fn main() -> Result<()> {
             checksum: args.checksum,
             delete: args.delete,
             threads,
+            index: args.index,
         },
         &excludes,
     )
@@ -94,6 +96,13 @@ fn main() -> Result<()> {
         &reporter,
     )
     .context("applying sync plan")?;
+
+    let deletes_complete = !args.delete || args.yes || plan.deletions.is_empty();
+    if args.index && !args.dry_run && stats.errors == 0 && deletes_complete {
+        Manifest::from_destination(&plan, &args.dst, args.checksum)?
+            .save(&args.dst)
+            .context("saving persistent index")?;
+    }
 
     reporter.finish(
         &stats,

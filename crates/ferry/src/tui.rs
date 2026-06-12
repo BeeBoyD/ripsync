@@ -26,6 +26,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Sparkline};
 
 use ferry_core::apply::{ApplyOptions, apply_plan};
+use ferry_core::index::Manifest;
 use ferry_core::plan::SyncPlan;
 use ferry_core::report::{Event, Reporter, Stats};
 
@@ -184,11 +185,19 @@ fn spawn_worker(
     };
     let state = Arc::clone(state);
     let done = Arc::clone(done);
+    let index = args.index;
+    let checksum = args.checksum;
+    let dry_run = args.dry_run;
+    let deletes_complete = !args.delete || args.yes || plan.deletions.is_empty();
     std::thread::spawn(move || {
         let reporter = TuiReporter {
             state: Arc::clone(&state),
         };
         let stats = apply_plan(&plan, &src, &dst, opts, &reporter).unwrap_or_default();
+        if index && !dry_run && stats.errors == 0 && deletes_complete {
+            let _ = Manifest::from_destination(&plan, &dst, checksum)
+                .and_then(|manifest| manifest.save(&dst));
+        }
         state.lock().unwrap().finished = true;
         done.store(true, Ordering::SeqCst);
         stats

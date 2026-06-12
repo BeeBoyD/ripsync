@@ -19,6 +19,7 @@ pub mod checksum;
 pub mod copy;
 pub mod delta;
 pub mod error;
+pub mod index;
 pub mod io;
 pub mod meta;
 pub mod plan;

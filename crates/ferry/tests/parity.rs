@@ -102,6 +102,9 @@ fn walk_into(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, String>) {
     for entry in rd.flatten() {
         let path = entry.path();
         let rel = path.strip_prefix(root).unwrap().to_path_buf();
+        if rel.starts_with(".ferry") {
+            continue;
+        }
         let meta = match fs::symlink_metadata(&path) {
             Ok(m) => m,
             Err(_) => continue,

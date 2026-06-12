@@ -186,3 +186,49 @@ fn json_output_is_valid() {
     let parsed: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
     assert_eq!(parsed["summary"]["copied"], 1);
 }
+
+#[test]
+fn index_detects_destination_modified_after_sync() {
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    write(&src.join("data.txt"), "source");
+
+    ferry()
+        .args([src.to_str().unwrap(), dst.to_str().unwrap(), "--no-tui"])
+        .assert()
+        .success();
+    write(&dst.join("data.txt"), "tampered destination");
+
+    ferry()
+        .args([src.to_str().unwrap(), dst.to_str().unwrap(), "--no-tui"])
+        .assert()
+        .success();
+
+    assert_eq!(fs::read_to_string(dst.join("data.txt")).unwrap(), "source");
+}
+
+#[test]
+fn corrupt_index_falls_back_to_full_scan() {
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    write(&src.join("data.txt"), "first");
+
+    ferry()
+        .args([src.to_str().unwrap(), dst.to_str().unwrap(), "--no-tui"])
+        .assert()
+        .success();
+    write(&dst.join(".ferry/manifest.bin"), "not a manifest");
+    write(&src.join("data.txt"), "second version");
+
+    ferry()
+        .args([src.to_str().unwrap(), dst.to_str().unwrap(), "--no-tui"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read_to_string(dst.join("data.txt")).unwrap(),
+        "second version"
+    );
+}
