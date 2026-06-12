@@ -8,6 +8,9 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["ripsync contributors"]
 repository = "https://github.com/beeboyd/ripsync"
+homepage = "https://github.com/beeboyd/ripsync"
+keywords = ["rsync", "sync", "backup", "filesystem", "cli"]
+categories = ["filesystem", "command-line-utilities"]
 rust-version = "1.85"
 
 [workspace.dependencies]

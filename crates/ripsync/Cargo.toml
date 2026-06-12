@@ -1,11 +1,16 @@
 [package]
 name = "ripsync"
-description = "ripsync: a fast, memory-safe rsync alternative."
+description = "A fast, memory-safe local directory sync tool — rsync's superpower, none of its footguns."
+documentation = "https://docs.rs/ripsync"
+readme = "../../README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 rust-version.workspace = true
 
 [[bin]]
@@ -21,7 +26,7 @@ path = "src/rs.rs"
 required-features = ["rs-alias"]
 
 [dependencies]
-ripsync-core = { path = "../ripsync-core" }
+ripsync-core = { path = "../ripsync-core", version = "0.3.0" }
 anyhow.workspace = true
 globset.workspace = true
 clap.workspace = true

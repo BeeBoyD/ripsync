@@ -1,5 +1,10 @@
 # ripsync
 
+[![CI](https://github.com/beeboyd/ripsync/actions/workflows/ci.yml/badge.svg)](https://github.com/beeboyd/ripsync/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/ripsync.svg)](https://crates.io/crates/ripsync)
+[![docs.rs](https://img.shields.io/docsrs/ripsync-core)](https://docs.rs/ripsync-core)
+[![license](https://img.shields.io/crates/l/ripsync.svg)](#license)
+
 > rsync's superpower, none of its footguns.
 
 ripsync is a local directory synchronization tool written in Rust. Version 0.3

@@ -1,0 +1,49 @@
+name: Bug report
+description: Report incorrect behavior in ripsync
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: A clear description of the bug, including the exact command line.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ripsync SRC DST --...
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ripsync version
+      description: Output of `ripsync --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+    validations:
+      required: true
+  - type: input
+    id: backend
+    attributes:
+      label: Backend and filesystem
+      description: Reported backend (auto/uring/portable/refs) and the source/destination filesystems.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant output, ideally with `-vv`.
+      render: shell
