@@ -33,7 +33,7 @@ filetime = "0.2"
 rand = "0.8"
 num_cpus = "1"
 reflink-copy = "0.1"
-rustix = { version = "1", features = ["fs"] }
+rustix = { version = "1", features = ["fs", "process"] }
 bincode = "1"
 xattr = "1"
 mimalloc = "0.1"

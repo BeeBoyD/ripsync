@@ -6,6 +6,9 @@ use std::path::Path;
 use assert_cmd::Command;
 use tempfile::tempdir;
 
+#[cfg(unix)]
+use std::os::unix::fs::{FileExt, MetadataExt};
+
 fn ferry() -> Command {
     Command::cargo_bin("ferry").expect("binary builds")
 }
@@ -230,5 +233,107 @@ fn corrupt_index_falls_back_to_full_scan() {
     assert_eq!(
         fs::read_to_string(dst.join("data.txt")).unwrap(),
         "second version"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn hard_links_preserve_and_repair_inode_groups() {
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    write(&src.join("original"), "shared");
+    fs::hard_link(src.join("original"), src.join("alias")).unwrap();
+
+    ferry()
+        .args([
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "--no-tui",
+            "--hard-links",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::metadata(dst.join("original")).unwrap().ino(),
+        fs::metadata(dst.join("alias")).unwrap().ino()
+    );
+
+    fs::remove_file(dst.join("alias")).unwrap();
+    write(&dst.join("alias"), "shared");
+    ferry()
+        .args([
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "--no-tui",
+            "--hard-links",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::metadata(dst.join("original")).unwrap().ino(),
+        fs::metadata(dst.join("alias")).unwrap().ino()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sparse_copy_preserves_holes() {
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    fs::create_dir_all(&src).unwrap();
+    let source = fs::File::create(src.join("sparse.bin")).unwrap();
+    source.set_len(64 * 1024 * 1024).unwrap();
+    source.write_at(b"start", 0).unwrap();
+    source.write_at(b"end", 64 * 1024 * 1024 - 3).unwrap();
+
+    ferry()
+        .args([
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "--no-tui",
+            "--sparse",
+            "--reflink",
+            "never",
+            "--backend",
+            "portable",
+        ])
+        .assert()
+        .success();
+
+    let source_meta = fs::metadata(src.join("sparse.bin")).unwrap();
+    let dest_meta = fs::metadata(dst.join("sparse.bin")).unwrap();
+    assert_eq!(source_meta.len(), dest_meta.len());
+    assert!(
+        dest_meta.blocks() * 512 < dest_meta.len() / 2,
+        "destination should remain sparse"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn xattrs_round_trip_when_supported() {
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    write(&src.join("data"), "content");
+    if xattr::set(src.join("data"), "user.ferry-test", b"value").is_err() {
+        return;
+    }
+
+    ferry()
+        .args([
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "--no-tui",
+            "--xattrs",
+        ])
+        .assert()
+        .success();
+
+    assert_eq!(
+        xattr::get(dst.join("data"), "user.ferry-test").unwrap(),
+        Some(b"value".to_vec())
     );
 }

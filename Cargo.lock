@@ -532,6 +532,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "xattr",
 ]
 
 [[package]]

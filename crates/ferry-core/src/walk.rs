@@ -41,6 +41,10 @@ pub struct Entry {
     pub ino: u64,
     /// Device id.
     pub dev: u64,
+    /// User id.
+    pub uid: u32,
+    /// Group id.
+    pub gid: u32,
 }
 
 impl Entry {
@@ -126,6 +130,8 @@ pub fn walk(root: &Path, threads: usize, excludes: &GlobSet) -> Result<Vec<Entry
                 mode: m.mode,
                 ino: m.ino,
                 dev: m.dev,
+                uid: m.uid,
+                gid: m.gid,
             },
         );
     }

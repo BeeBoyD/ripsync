@@ -42,6 +42,7 @@ pub struct Deletion {
 
 /// Knobs controlling how the plan is built.
 #[derive(Debug, Clone, Copy, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct PlanOptions {
     /// Compare by content hash rather than size+mtime.
     pub checksum: bool,
@@ -51,6 +52,8 @@ pub struct PlanOptions {
     pub threads: usize,
     /// Use the persistent index (manifest) for fast incremental re-syncs.
     pub index: bool,
+    /// Preserve source hardlink groups.
+    pub hard_links: bool,
 }
 
 /// The full plan: per-entry actions plus pending deletions.
@@ -147,7 +150,7 @@ pub fn build_plan(
 
     // Classify in parallel — the checksum path reads file contents, so spreading
     // the work across cores matters; the size+mtime path is cheap either way.
-    let actions: Vec<PlannedAction> = src_entries
+    let mut actions: Vec<PlannedAction> = src_entries
         .par_iter()
         .map(|entry| {
             let action = match dst_map.get(entry.rel.as_path()) {
@@ -160,6 +163,11 @@ pub fn build_plan(
             }
         })
         .collect();
+    if opts.hard_links {
+        enforce_hardlink_actions(&mut actions, |rel| {
+            dst_map.get(rel).map(|entry| (entry.dev, entry.ino))
+        });
+    }
 
     let mut deletions = Vec::new();
     if opts.delete {
@@ -189,13 +197,20 @@ fn plan_from_manifest(
     manifest: &Manifest,
     opts: PlanOptions,
 ) -> SyncPlan {
-    let actions: Vec<PlannedAction> = src_entries
+    let mut actions: Vec<PlannedAction> = src_entries
         .par_iter()
         .map(|entry| PlannedAction {
             entry: entry.clone(),
             action: manifest.classify(entry, opts.checksum, src, dst),
         })
         .collect();
+    if opts.hard_links {
+        enforce_hardlink_actions(&mut actions, |rel| {
+            crate::meta::meta_min(&dst.join(rel))
+                .ok()
+                .map(|entry| (entry.dev, entry.ino))
+        });
+    }
 
     let mut deletions = Vec::new();
     if opts.delete {
@@ -212,6 +227,28 @@ fn plan_from_manifest(
     }
 
     SyncPlan { actions, deletions }
+}
+
+/// A duplicate source inode must point at the same destination inode as the
+/// first member of its group. Force an update when the topology differs.
+fn enforce_hardlink_actions(
+    actions: &mut [PlannedAction],
+    destination_identity: impl Fn(&Path) -> Option<(u64, u64)>,
+) {
+    let mut first: HashMap<(u64, u64), Option<(u64, u64)>> = HashMap::new();
+    for planned in actions {
+        if !planned.entry.is_file() {
+            continue;
+        }
+        let source_id = (planned.entry.dev, planned.entry.ino);
+        if let Some(canonical_destination) = first.get(&source_id) {
+            if destination_identity(&planned.entry.rel) != *canonical_destination {
+                planned.action = Action::Update;
+            }
+        } else {
+            first.insert(source_id, destination_identity(&planned.entry.rel));
+        }
+    }
 }
 
 /// Classify a source entry whose path also exists in the destination.

@@ -55,6 +55,30 @@ pub struct Args {
     #[arg(long = "no-index", action = clap::ArgAction::SetFalse, default_value_t = true)]
     pub index: bool,
 
+    /// Preserve hardlinked source files as hardlinks in the destination.
+    #[arg(short = 'H', long)]
+    pub hard_links: bool,
+
+    /// Preserve sparse-file holes using SEEK_DATA/SEEK_HOLE where supported.
+    #[arg(short = 'S', long)]
+    pub sparse: bool,
+
+    /// Preserve non-ACL extended attributes.
+    #[arg(long)]
+    pub xattrs: bool,
+
+    /// Preserve POSIX ACL attributes.
+    #[arg(long)]
+    pub acls: bool,
+
+    /// Preserve numeric owner id (requires suitable privileges).
+    #[arg(long)]
+    pub owner: bool,
+
+    /// Preserve numeric group id (requires suitable privileges).
+    #[arg(long)]
+    pub group: bool,
+
     /// Exclude paths matching this glob (repeatable).
     #[arg(long, value_name = "PAT")]
     pub exclude: Vec<String>,

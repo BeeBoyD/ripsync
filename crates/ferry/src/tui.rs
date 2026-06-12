@@ -25,7 +25,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Sparkline};
 
-use ferry_core::apply::{ApplyOptions, apply_plan};
+use ferry_core::apply::{ApplyOptions, MetadataOptions, apply_plan};
 use ferry_core::index::Manifest;
 use ferry_core::plan::SyncPlan;
 use ferry_core::report::{Event, Reporter, Stats};
@@ -182,6 +182,14 @@ fn spawn_worker(
         reflink: args.reflink.into(),
         fsync: args.fsync.into(),
         backend: args.backend.into(),
+        metadata: MetadataOptions {
+            hard_links: args.hard_links,
+            sparse: args.sparse,
+            xattrs: args.xattrs,
+            acls: args.acls,
+            owner: args.owner,
+            group: args.group,
+        },
     };
     let state = Arc::clone(state);
     let done = Arc::clone(done);

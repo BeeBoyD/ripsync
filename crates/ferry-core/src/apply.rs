@@ -6,15 +6,17 @@
 //! the target — so a crash mid-copy never leaves a half-written file in place.
 //! Every write/symlink/delete target is checked for destination containment first.
 
+use std::collections::HashMap;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rayon::prelude::*;
 
 use crate::copy::{FsyncMode, ReflinkMode, copy_file_into};
 use crate::meta::{
-    canonical_root, check_relative, contained_target, set_mode, set_mtime, set_symlink_mtime,
+    canonical_root, check_relative, contained_target, copy_xattrs, set_mode, set_mtime,
+    set_owner_group, set_symlink_mtime,
 };
 use crate::plan::{Action, SyncPlan};
 use crate::report::{Event, Reporter, Stats};
@@ -50,6 +52,26 @@ pub struct ApplyOptions {
     pub fsync: FsyncMode,
     /// File-copy backend selection.
     pub backend: Backend,
+    /// Optional metadata and file-layout preservation.
+    pub metadata: MetadataOptions,
+}
+
+/// Optional metadata and file-layout preservation controls.
+#[derive(Debug, Clone, Copy, Default)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct MetadataOptions {
+    /// Preserve hardlink groups.
+    pub hard_links: bool,
+    /// Preserve sparse-file holes.
+    pub sparse: bool,
+    /// Preserve non-ACL extended attributes.
+    pub xattrs: bool,
+    /// Preserve POSIX ACL attributes.
+    pub acls: bool,
+    /// Preserve numeric owner id.
+    pub owner: bool,
+    /// Preserve numeric group id.
+    pub group: bool,
 }
 
 /// Thread-safe running totals.
@@ -148,9 +170,27 @@ fn apply_real<R: Reporter>(
     // and dirs must exist before their children); files run in parallel.
     let mut dirs: Vec<&Entry> = Vec::new();
     let mut files: Vec<(&Entry, Action)> = Vec::new();
+    let mut hardlinks: Vec<(&Entry, Action, PathBuf)> = Vec::new();
     let mut symlinks: Vec<(&Entry, Action)> = Vec::new();
+    let mut first_hardlink: HashMap<(u64, u64), PathBuf> = HashMap::new();
 
     for pa in &plan.actions {
+        if opts.metadata.hard_links && pa.entry.is_file() {
+            let id = (pa.entry.dev, pa.entry.ino);
+            if let Some(canonical) = first_hardlink.get(&id) {
+                if pa.action == Action::Skip {
+                    reporter.event(Event::Skipped {
+                        rel: pa.entry.rel.clone(),
+                    });
+                    counters.skipped.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    check_relative(&pa.entry.rel)?;
+                    hardlinks.push((&pa.entry, pa.action, canonical.clone()));
+                }
+                continue;
+            }
+            first_hardlink.insert(id, pa.entry.rel.clone());
+        }
         if pa.action == Action::Skip {
             reporter.event(Event::Skipped {
                 rel: pa.entry.rel.clone(),
@@ -167,36 +207,7 @@ fn apply_real<R: Reporter>(
     }
 
     // 1. Directories, parent-first (actions are already sorted by rel path).
-    for entry in &dirs {
-        let action = action_for_existing(dst, entry);
-        let target = root_canon.join(&entry.rel);
-        // A non-directory in the way (type change file/symlink → dir): clear it.
-        if let Ok(meta) = std::fs::symlink_metadata(&target) {
-            if !meta.is_dir() {
-                if let Err(e) = std::fs::remove_file(&target).map_err(|e| Error::io(&target, e)) {
-                    report_fail(reporter, counters, &entry.rel, &e);
-                    continue;
-                }
-            }
-        }
-        if let Err(e) = std::fs::create_dir_all(&target).map_err(|e| Error::io(&target, e)) {
-            report_fail(reporter, counters, &entry.rel, &e);
-            continue;
-        }
-        // Confirm the created dir is contained, then set its mode.
-        if let Err(e) = contained_target(&root_canon, &target).and_then(|t| {
-            set_mode(&t, entry.mode)?;
-            Ok(())
-        }) {
-            report_fail(reporter, counters, &entry.rel, &e);
-            continue;
-        }
-        reporter.event(Event::DirDone {
-            rel: entry.rel.clone(),
-            action,
-        });
-        counters.bump_action(action);
-    }
+    create_directories(&dirs, src, dst, &root_canon, opts, reporter, counters);
 
     // 2. Files.
     let pool = build_pool(opts.threads);
@@ -206,10 +217,13 @@ fn apply_real<R: Reporter>(
         None => run_files(),
     }
 
-    // 3. Symlinks, sequentially.
+    // 3. Duplicate hardlinks after their canonical files exist.
+    copy_hardlinks(&hardlinks, &root_canon, reporter, counters);
+
+    // 4. Symlinks, sequentially.
     for (entry, action) in &symlinks {
         if let EntryKind::Symlink(link_target) = &entry.kind {
-            match create_symlink(&root_canon, &entry.rel, link_target, entry.mtime) {
+            match create_symlink(src, &root_canon, entry, link_target, opts) {
                 Ok(()) => {
                     reporter.event(Event::SymlinkDone {
                         rel: entry.rel.clone(),
@@ -222,24 +236,82 @@ fn apply_real<R: Reporter>(
         }
     }
 
-    // 4. Directory mtimes last (deepest first) — children writes bump parent times.
+    // 5. Directory mtimes last (deepest first) — children writes bump parent times.
     for entry in dirs.iter().rev() {
         let target = root_canon.join(&entry.rel);
         let _ = set_mtime(&target, entry.mtime);
     }
 
-    // 5. Guarded deletions (deepest first).
+    // 6. Guarded deletions (deepest first).
     if opts.delete && opts.yes {
         run_deletions(plan, &root_canon, reporter, counters);
     }
 
-    // 6. Batched directory fsync for rename durability (auto mode). `always`
+    // 7. Batched directory fsync for rename durability (auto mode). `always`
     // already fsynced each file; `never` skips even this.
     if opts.fsync == FsyncMode::Auto {
         fsync_touched_dirs(&root_canon, &dirs, &files);
     }
 
     Ok(())
+}
+
+fn create_directories<R: Reporter>(
+    dirs: &[&Entry],
+    src: &Path,
+    dst: &Path,
+    root_canon: &Path,
+    opts: ApplyOptions,
+    reporter: &R,
+    counters: &Counters,
+) {
+    for entry in dirs {
+        let action = action_for_existing(dst, entry);
+        let target = root_canon.join(&entry.rel);
+        if let Ok(meta) = std::fs::symlink_metadata(&target) {
+            if !meta.is_dir() {
+                if let Err(error) =
+                    std::fs::remove_file(&target).map_err(|error| Error::io(&target, error))
+                {
+                    report_fail(reporter, counters, &entry.rel, &error);
+                    continue;
+                }
+            }
+        }
+        if let Err(error) =
+            std::fs::create_dir_all(&target).map_err(|error| Error::io(&target, error))
+        {
+            report_fail(reporter, counters, &entry.rel, &error);
+            continue;
+        }
+        let result = contained_target(root_canon, &target).and_then(|contained| {
+            let source = src.join(&entry.rel);
+            set_owner_group(
+                &contained,
+                entry.uid,
+                entry.gid,
+                opts.metadata.owner,
+                opts.metadata.group,
+                true,
+            )?;
+            set_mode(&contained, entry.mode)?;
+            copy_xattrs(
+                &source,
+                &contained,
+                opts.metadata.xattrs,
+                opts.metadata.acls,
+            )
+        });
+        if let Err(error) = result {
+            report_fail(reporter, counters, &entry.rel, &error);
+            continue;
+        }
+        reporter.event(Event::DirDone {
+            rel: entry.rel.clone(),
+            action,
+        });
+        counters.bump_action(action);
+    }
 }
 
 /// Fsync every directory that received a create/rename, once each, so the
@@ -349,10 +421,25 @@ fn prepare_paths(
 }
 
 /// Apply metadata to `tmp`, then atomically rename it over `target`.
-fn finalize_file(target: &Path, tmp: &Path, entry: &Entry, fsync: FsyncMode) -> Result<()> {
+fn finalize_file(
+    src: &Path,
+    target: &Path,
+    tmp: &Path,
+    entry: &Entry,
+    opts: ApplyOptions,
+) -> Result<()> {
+    set_owner_group(
+        tmp,
+        entry.uid,
+        entry.gid,
+        opts.metadata.owner,
+        opts.metadata.group,
+        true,
+    )?;
     set_mode(tmp, entry.mode)?;
+    copy_xattrs(src, tmp, opts.metadata.xattrs, opts.metadata.acls)?;
     set_mtime(tmp, entry.mtime)?;
-    if fsync == FsyncMode::Always {
+    if opts.fsync == FsyncMode::Always {
         if let Ok(f) = std::fs::File::open(tmp) {
             let _ = f.sync_all();
         }
@@ -378,20 +465,19 @@ fn copy_file_atomic(
     src: &Path,
     root_canon: &Path,
     entry: &Entry,
-    reflink: ReflinkMode,
-    fsync: FsyncMode,
+    opts: ApplyOptions,
 ) -> Result<u64> {
     let src_path = src.join(&entry.rel);
     let (target, tmp) = prepare_paths(root_canon, entry)?;
     // Copy ladder: reflink → copy_file_range → buffered. `tmp` must not pre-exist.
-    let bytes = match copy_file_into(&src_path, &tmp, reflink) {
+    let bytes = match copy_file_into(&src_path, &tmp, opts.reflink, opts.metadata.sparse) {
         Ok(b) => b,
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
             return Err(Error::io(&src_path, e));
         }
     };
-    finalize_file(&target, &tmp, entry, fsync)?;
+    finalize_file(&src_path, &target, &tmp, entry, opts)?;
     Ok(bytes)
 }
 
@@ -406,7 +492,7 @@ fn copy_files<R: Reporter>(
 ) {
     #[cfg(all(target_os = "linux", feature = "io-uring"))]
     {
-        if opts.backend != Backend::Portable {
+        if opts.backend != Backend::Portable && !opts.metadata.sparse {
             copy_files_uring(files, src, root_canon, opts, reporter, counters);
             return;
         }
@@ -428,7 +514,7 @@ fn copy_files_portable<R: Reporter>(
             rel: entry.rel.clone(),
             len: entry.len,
         });
-        match copy_file_atomic(src, root_canon, entry, opts.reflink, opts.fsync) {
+        match copy_file_atomic(src, root_canon, entry, opts) {
             Ok(bytes) => {
                 counters.bytes.fetch_add(bytes, Ordering::Relaxed);
                 counters.bump_action(*action);
@@ -495,14 +581,14 @@ fn copy_files_uring<R: Reporter>(
     // Finalize in parallel; uring rejects fall back to the portable ladder.
     prepared.par_iter().zip(batch).for_each(|(p, res)| {
         let outcome = if let Ok(bytes) = res {
-            finalize_file(&p.target, &p.tmp, p.entry, opts.fsync).map(|()| bytes)
+            finalize_file(&p.src_path, &p.target, &p.tmp, p.entry, opts).map(|()| bytes)
         } else {
             // Fall back: remove any partial temp, then portable copy.
             let _ = std::fs::remove_file(&p.tmp);
-            copy_file_into(&p.src_path, &p.tmp, opts.reflink)
+            copy_file_into(&p.src_path, &p.tmp, opts.reflink, opts.metadata.sparse)
                 .map_err(|e| Error::io(&p.src_path, e))
                 .and_then(|bytes| {
-                    finalize_file(&p.target, &p.tmp, p.entry, opts.fsync).map(|()| bytes)
+                    finalize_file(&p.src_path, &p.target, &p.tmp, p.entry, opts).map(|()| bytes)
                 })
         };
         match outcome {
@@ -520,14 +606,69 @@ fn copy_files_uring<R: Reporter>(
     });
 }
 
+/// Materialize duplicate members after their canonical hardlink targets exist.
+fn copy_hardlinks<R: Reporter>(
+    hardlinks: &[(&Entry, Action, PathBuf)],
+    root_canon: &Path,
+    reporter: &R,
+    counters: &Counters,
+) {
+    for (entry, action, canonical) in hardlinks {
+        reporter.event(Event::FileStart {
+            rel: entry.rel.clone(),
+            len: entry.len,
+        });
+        match create_hardlink(root_canon, entry, canonical) {
+            Ok(()) => {
+                counters.bump_action(*action);
+                reporter.event(Event::FileDone {
+                    rel: entry.rel.clone(),
+                    action: *action,
+                    bytes: 0,
+                });
+            }
+            Err(error) => report_fail(reporter, counters, &entry.rel, &error),
+        }
+    }
+}
+
+/// Atomically create a hardlink to an already materialized canonical file.
+fn create_hardlink(root_canon: &Path, entry: &Entry, canonical_rel: &Path) -> Result<()> {
+    let canonical = root_canon.join(canonical_rel);
+    let canonical =
+        std::fs::canonicalize(&canonical).map_err(|error| Error::io(&canonical, error))?;
+    if !canonical.starts_with(root_canon) {
+        return Err(Error::Containment(canonical));
+    }
+    let (target, tmp) = prepare_paths(root_canon, entry)?;
+    std::fs::hard_link(&canonical, &tmp).map_err(|error| Error::io(&tmp, error))?;
+    if let Ok(meta) = std::fs::symlink_metadata(&target) {
+        let result = if meta.is_dir() {
+            std::fs::remove_dir_all(&target)
+        } else {
+            std::fs::remove_file(&target)
+        };
+        if let Err(error) = result {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(Error::io(&target, error));
+        }
+    }
+    if let Err(error) = std::fs::rename(&tmp, &target) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error::io(&target, error));
+    }
+    Ok(())
+}
+
 /// Create (or replace) a symlink, copying its target verbatim — never followed.
 fn create_symlink(
+    src: &Path,
     root_canon: &Path,
-    rel: &Path,
+    entry: &Entry,
     link_target: &Path,
-    mtime: filetime::FileTime,
+    opts: ApplyOptions,
 ) -> Result<()> {
-    let link_path = root_canon.join(rel);
+    let link_path = root_canon.join(&entry.rel);
     let target = contained_target(root_canon, &link_path)?;
 
     // Remove anything already at the path (file, dir, or stale link).
@@ -540,7 +681,21 @@ fn create_symlink(
     }
 
     symlink_impl(link_target, &target)?;
-    let _ = set_symlink_mtime(&target, mtime);
+    set_owner_group(
+        &target,
+        entry.uid,
+        entry.gid,
+        opts.metadata.owner,
+        opts.metadata.group,
+        false,
+    )?;
+    copy_xattrs(
+        &src.join(&entry.rel),
+        &target,
+        opts.metadata.xattrs,
+        opts.metadata.acls,
+    )?;
+    let _ = set_symlink_mtime(&target, entry.mtime);
     Ok(())
 }
 

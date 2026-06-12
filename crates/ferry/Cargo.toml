@@ -38,3 +38,4 @@ predicates = "3"
 proptest.workspace = true
 blake3.workspace = true
 filetime.workspace = true
+xattr.workspace = true

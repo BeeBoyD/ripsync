@@ -46,6 +46,10 @@ ferry <SRC> <DST> [FLAGS]
 | `--fsync <auto\|always\|never>` | Durability vs speed. `auto`/`never` skip per-file fsync; `auto` still fsyncs touched directories once so renames survive a crash; `always` fsyncs every file before rename (slowest, strongest). |
 | `--backend <auto\|uring\|portable>` | Copy backend. `auto` uses io_uring on Linux when available. |
 | `--no-index` | Disable the default persistent destination index for incremental re-syncs. |
+| `-H, --hard-links` | Preserve source hardlink groups. |
+| `-S, --sparse` | Preserve sparse-file holes where the filesystem supports extent seeking. |
+| `--xattrs` / `--acls` | Preserve extended attributes / POSIX ACL attributes. |
+| `--owner` / `--group` | Preserve numeric uid/gid (requires suitable privileges). |
 | `--exclude <PAT>` | Glob, repeatable. |
 | `--bwlimit <RATE>` | Throttle (parsed now, enforced later). |
 | `--partial` | Keep partial files for resume (later phase). |

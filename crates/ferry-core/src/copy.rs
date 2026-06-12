@@ -42,7 +42,12 @@ const BUF: usize = 1 << 20; // 1 MiB
 ///
 /// Returns the underlying I/O error if every applicable strategy fails, or if
 /// [`ReflinkMode::Always`] is set and the clone is unsupported.
-pub fn copy_file_into(src: &Path, tmp: &Path, reflink: ReflinkMode) -> io::Result<u64> {
+pub fn copy_file_into(
+    src: &Path,
+    tmp: &Path,
+    reflink: ReflinkMode,
+    sparse: bool,
+) -> io::Result<u64> {
     if reflink != ReflinkMode::Never {
         match reflink_copy::reflink(src, tmp) {
             Ok(()) => return std::fs::metadata(tmp).map(|m| m.len()),
@@ -51,6 +56,23 @@ pub fn copy_file_into(src: &Path, tmp: &Path, reflink: ReflinkMode) -> io::Resul
                 if reflink == ReflinkMode::Always {
                     return Err(e);
                 }
+            }
+        }
+    }
+
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "solaris"
+    ))]
+    if sparse {
+        match sparse_copy(src, tmp) {
+            Ok(n) => return Ok(n),
+            Err(_) => {
+                let _ = std::fs::remove_file(tmp);
             }
         }
     }
@@ -67,6 +89,62 @@ pub fn copy_file_into(src: &Path, tmp: &Path, reflink: ReflinkMode) -> io::Resul
     }
 
     buffered_copy(src, tmp)
+}
+
+/// Copy allocated extents only, preserving holes in sparse files.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "solaris"
+))]
+fn sparse_copy(src: &Path, tmp: &Path) -> io::Result<u64> {
+    use std::os::unix::fs::FileExt;
+
+    use rustix::fs::SeekFrom;
+
+    let infile = File::open(src)?;
+    let outfile = File::create(tmp)?;
+    let len = infile.metadata()?.len();
+    outfile.set_len(len)?;
+
+    let mut offset = 0_u64;
+    let mut buf = vec![0_u8; BUF];
+    while offset < len {
+        let data = match rustix::fs::seek(&infile, SeekFrom::Data(offset)) {
+            Ok(data) => data,
+            Err(error) if error == rustix::io::Errno::NXIO => break,
+            Err(error) => return Err(io::Error::from(error)),
+        };
+        let hole = rustix::fs::seek(&infile, SeekFrom::Hole(data))?.min(len);
+        let mut position = data;
+        while position < hole {
+            let wanted = usize::try_from((hole - position).min(BUF as u64)).unwrap_or(BUF);
+            let read = infile.read_at(&mut buf[..wanted], position)?;
+            if read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "short sparse extent read",
+                ));
+            }
+            let mut written = 0;
+            while written < read {
+                let count = outfile.write_at(&buf[written..read], position + written as u64)?;
+                if count == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "short sparse extent write",
+                    ));
+                }
+                written += count;
+            }
+            position += read as u64;
+        }
+        offset = hole;
+    }
+    Ok(len)
 }
 
 /// Portable buffered copy with a large buffer.

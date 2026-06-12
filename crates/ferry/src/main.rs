@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
-use ferry_core::apply::{ApplyOptions, apply_plan};
+use ferry_core::apply::{ApplyOptions, MetadataOptions, apply_plan};
 use ferry_core::index::Manifest;
 use ferry_core::plan::{PlanOptions, build_plan};
 
@@ -43,6 +43,7 @@ fn main() -> Result<()> {
             delete: args.delete,
             threads,
             index: args.index,
+            hard_links: args.hard_links,
         },
         &excludes,
     )
@@ -92,6 +93,14 @@ fn main() -> Result<()> {
             reflink: args.reflink.into(),
             fsync: args.fsync.into(),
             backend: args.backend.into(),
+            metadata: MetadataOptions {
+                hard_links: args.hard_links,
+                sparse: args.sparse,
+                xattrs: args.xattrs,
+                acls: args.acls,
+                owner: args.owner,
+                group: args.group,
+            },
         },
         &reporter,
     )

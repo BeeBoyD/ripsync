@@ -42,6 +42,10 @@ pub struct MinMeta {
     pub ino: u64,
     /// Device id.
     pub dev: u64,
+    /// User id.
+    pub uid: u32,
+    /// Group id.
+    pub gid: u32,
 }
 
 /// Fetch [`MinMeta`] for `path` without following a final symlink.
@@ -62,7 +66,9 @@ pub fn meta_min(path: &Path) -> Result<MinMeta> {
         | StatxFlags::MODE
         | StatxFlags::SIZE
         | StatxFlags::MTIME
-        | StatxFlags::INO;
+        | StatxFlags::INO
+        | StatxFlags::UID
+        | StatxFlags::GID;
     let stx = statx(CWD, path, AtFlags::SYMLINK_NOFOLLOW, mask)
         .map_err(|e| Error::io(path, std::io::Error::from_raw_os_error(e.raw_os_error())))?;
 
@@ -82,6 +88,8 @@ pub fn meta_min(path: &Path) -> Result<MinMeta> {
         mode,
         ino: stx.stx_ino,
         dev,
+        uid: stx.stx_uid,
+        gid: stx.stx_gid,
     })
 }
 
@@ -104,12 +112,12 @@ pub fn meta_min(path: &Path) -> Result<MinMeta> {
         FileTypeKind::Other
     };
     #[cfg(unix)]
-    let (mode, ino, dev) = {
+    let (mode, ino, dev, uid, gid) = {
         use std::os::unix::fs::MetadataExt;
-        (meta.mode(), meta.ino(), meta.dev())
+        (meta.mode(), meta.ino(), meta.dev(), meta.uid(), meta.gid())
     };
     #[cfg(not(unix))]
-    let (mode, ino, dev) = (0u32, 0u64, 0u64);
+    let (mode, ino, dev, uid, gid) = (0u32, 0u64, 0u64, 0u32, 0u32);
     Ok(MinMeta {
         kind,
         len: meta.len(),
@@ -117,7 +125,74 @@ pub fn meta_min(path: &Path) -> Result<MinMeta> {
         mode,
         ino,
         dev,
+        uid,
+        gid,
     })
+}
+
+/// Set selected ownership fields. On non-Unix platforms this is a no-op.
+///
+/// # Errors
+///
+/// Returns an error if ownership was requested but could not be changed.
+pub fn set_owner_group(
+    path: &Path,
+    uid: u32,
+    gid: u32,
+    owner: bool,
+    group: bool,
+    follow: bool,
+) -> Result<()> {
+    #[cfg(unix)]
+    if owner || group {
+        use rustix::fs::{AtFlags, CWD, Gid, Uid};
+
+        let uid = owner.then(|| Uid::from_raw(uid));
+        let gid = group.then(|| Gid::from_raw(gid));
+        let flags = if follow {
+            AtFlags::empty()
+        } else {
+            AtFlags::SYMLINK_NOFOLLOW
+        };
+        rustix::fs::chownat(CWD, path, uid, gid, flags)
+            .map_err(|error| Error::io(path, std::io::Error::from(error)))?;
+    }
+    #[cfg(not(unix))]
+    let _ = (path, uid, gid, owner, group, follow);
+    Ok(())
+}
+
+/// Copy selected extended attributes from `src` to `dst`.
+///
+/// POSIX ACLs are represented by dedicated system xattrs on Linux and by the
+/// system security attribute on macOS. `xattrs` and `acls` select those groups
+/// independently.
+///
+/// # Errors
+///
+/// Returns an error if selected attributes cannot be listed, read, or written.
+pub fn copy_xattrs(src: &Path, dst: &Path, xattrs: bool, acls: bool) -> Result<()> {
+    #[cfg(unix)]
+    if xattrs || acls {
+        for name in xattr::list(src).map_err(|error| Error::io(src, error))? {
+            let is_acl = is_acl_xattr(&name);
+            if (is_acl && !acls) || (!is_acl && !xattrs) {
+                continue;
+            }
+            if let Some(value) = xattr::get(src, &name).map_err(|error| Error::io(src, error))? {
+                xattr::set(dst, &name, &value).map_err(|error| Error::io(dst, error))?;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (src, dst, xattrs, acls);
+    Ok(())
+}
+
+#[cfg(unix)]
+fn is_acl_xattr(name: &std::ffi::OsStr) -> bool {
+    let bytes = std::os::unix::ffi::OsStrExt::as_bytes(name);
+    bytes.starts_with(b"system.posix_acl_") || bytes == b"com.apple.system.Security"
 }
 
 /// Canonicalize `root`, creating it first if it does not yet exist.
