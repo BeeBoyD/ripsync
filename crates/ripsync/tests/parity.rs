@@ -2,7 +2,7 @@
 //!
 //! proptest generates random directory trees (nested dirs, varied files, a few
 //! symlinks); we sync the same source into `dest_rsync` with `rsync -a` and into
-//! `dest_ferry` with `ferry`, then assert the two destinations are identical in
+//! `dest_ripsync` with `ripsync`, then assert the two destinations are identical in
 //! structure, content, modes, mtimes (±1s), and symlink targets.
 //!
 //! If `rsync` is not installed the tests no-op (they print a note and pass).
@@ -30,9 +30,9 @@ fn rsync_available() -> bool {
         .unwrap_or(false)
 }
 
-fn ferry_bin() -> PathBuf {
+fn ripsync_bin() -> PathBuf {
     // Cargo sets CARGO_BIN_EXE_<name> for integration tests.
-    PathBuf::from(env!("CARGO_BIN_EXE_ferry"))
+    PathBuf::from(env!("CARGO_BIN_EXE_ripsync"))
 }
 
 /// A path component from a small alphabet, so collisions (and thus dir/file
@@ -102,7 +102,7 @@ fn walk_into(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, String>) {
     for entry in rd.flatten() {
         let path = entry.path();
         let rel = path.strip_prefix(root).unwrap().to_path_buf();
-        if rel.starts_with(".ferry") {
+        if rel.starts_with(".ripsync") {
             continue;
         }
         let meta = match fs::symlink_metadata(&path) {
@@ -134,7 +134,7 @@ fn assert_identical(a: &BTreeMap<PathBuf, String>, b: &BTreeMap<PathBuf, String>
     let b_keys: Vec<_> = b.keys().collect();
     assert_eq!(
         a_keys, b_keys,
-        "different path sets\nrsync={a_keys:?}\nferry={b_keys:?}"
+        "different path sets\nrsync={a_keys:?}\nripsync={b_keys:?}"
     );
 
     for (path, av) in a {
@@ -147,7 +147,7 @@ fn assert_identical(a: &BTreeMap<PathBuf, String>, b: &BTreeMap<PathBuf, String>
         assert_eq!(
             am.0,
             bm.0,
-            "mismatch at {}: rsync={av} ferry={bv}",
+            "mismatch at {}: rsync={av} ripsync={bv}",
             path.display()
         );
         let dt = (am.1 - bm.1).abs();
@@ -177,24 +177,24 @@ fn run_rsync(src: &Path, dst: &Path, delete: bool) {
     if delete {
         cmd.arg("--delete");
     }
-    // Trailing slash on src ⇒ copy contents into dst (matches ferry semantics).
+    // Trailing slash on src ⇒ copy contents into dst (matches ripsync semantics).
     cmd.arg(format!("{}/", src.display())).arg(dst);
     let status = cmd.status().expect("spawn rsync");
     assert!(status.success(), "rsync failed");
 }
 
-fn run_ferry(src: &Path, dst: &Path, delete: bool) {
-    let mut cmd = Command::new(ferry_bin());
+fn run_ripsync(src: &Path, dst: &Path, delete: bool) {
+    let mut cmd = Command::new(ripsync_bin());
     cmd.arg(src).arg(dst).arg("--no-tui").arg("-q");
     // Exercise a specific backend when requested (the harness must pass on both).
-    if let Ok(backend) = std::env::var("FERRY_TEST_BACKEND") {
+    if let Ok(backend) = std::env::var("RIPSYNC_TEST_BACKEND") {
         cmd.arg("--backend").arg(backend);
     }
     if delete {
         cmd.arg("--delete").arg("--yes");
     }
-    let status = cmd.status().expect("spawn ferry");
-    assert!(status.success(), "ferry failed");
+    let status = cmd.status().expect("spawn ripsync");
+    assert!(status.success(), "ripsync failed");
 }
 
 proptest! {
@@ -213,9 +213,9 @@ proptest! {
         build_tree(&src, &entries);
 
         let dst_r = tmp.path().join("dst_rsync");
-        let dst_f = tmp.path().join("dst_ferry");
+        let dst_f = tmp.path().join("dst_ripsync");
         run_rsync(&src, &dst_r, false);
-        run_ferry(&src, &dst_f, false);
+        run_ripsync(&src, &dst_f, false);
 
         assert_identical(&snapshot(&dst_r), &snapshot(&dst_f));
     }
@@ -234,7 +234,7 @@ proptest! {
         build_tree(&src, &entries);
 
         let dst_r = tmp.path().join("dst_rsync");
-        let dst_f = tmp.path().join("dst_ferry");
+        let dst_f = tmp.path().join("dst_ripsync");
 
         // Seed both destinations with identical stale content to be deleted.
         for dst in [&dst_r, &dst_f] {
@@ -248,7 +248,7 @@ proptest! {
         }
 
         run_rsync(&src, &dst_r, true);
-        run_ferry(&src, &dst_f, true);
+        run_ripsync(&src, &dst_f, true);
 
         assert_identical(&snapshot(&dst_r), &snapshot(&dst_f));
     }

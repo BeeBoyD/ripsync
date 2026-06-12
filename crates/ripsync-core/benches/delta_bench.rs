@@ -1,8 +1,8 @@
 //! Criterion micro-benches: rolling checksum, delta encode, delta apply.
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
-use ferry_core::checksum::RollingChecksum;
-use ferry_core::delta::{apply, encode};
+use ripsync_core::checksum::RollingChecksum;
+use ripsync_core::delta::{apply, encode};
 
 /// Deterministic pseudo-random buffer (no rand dep needed in the bench).
 fn buf(len: usize, seed: u64) -> Vec<u8> {

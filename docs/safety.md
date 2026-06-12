@@ -2,7 +2,7 @@
 
 ## Writes
 
-Regular files are copied to `.ferry-tmp-*` in the target directory, metadata is
+Regular files are copied to `.ripsync-tmp-*` in the target directory, metadata is
 applied, and the file is atomically renamed. Copy failures remove the temporary
 file. Destination paths and symlink ancestors are checked against the
 canonical destination root.
@@ -14,7 +14,7 @@ operation or bounded parallel chunk finishes. Checkpoints prevent subsequent
 chunks and phases from starting. A cancelled run:
 
 - retains destination operations already completed;
-- leaves no Ferry temporary files;
+- leaves no ripsync temporary files;
 - performs no later verification or finalization;
 - does not update the manifest;
 - exits with status `130`.
@@ -33,7 +33,7 @@ Deletes run deepest-first and use the same containment checks as writes.
 `all` additionally compares complete path sets. File kinds, modes, mtimes,
 symlink targets, and BLAKE3 content hashes are checked. Hardlinks, sparse
 allocation, xattrs, ACLs, uid, and gid are checked only when their preservation
-flags are enabled. `.ferry` is excluded.
+flags are enabled. `.ripsync` is excluded.
 
 Mismatches are reported structurally, prevent manifest persistence, and return
 exit status `1`.

@@ -7,12 +7,12 @@ use std::path::{Path, PathBuf};
 use globset::GlobSet;
 use rayon::prelude::*;
 
-use crate::index::{FERRY_DIR, Manifest};
+use crate::index::{Manifest, RIPSYNC_DIR};
 use crate::report::{Event, NullReporter, Reporter, RunPhase};
 use crate::walk::{Entry, EntryKind, walk_controlled};
 use crate::{Error, Result, RunControl};
 
-/// What Ferry intends to do with a single entry.
+/// What ripsync intends to do with a single entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     /// Entry is missing in the destination — create it.
@@ -156,15 +156,15 @@ pub fn build_plan_controlled<R: Reporter>(
     reporter.event(Event::PlanningProgress {
         entries: src_entries.len(),
     });
-    // Never sync or delete Ferry's own metadata directory at the dst root.
-    src_entries.retain(|e| !e.rel.starts_with(FERRY_DIR));
+    // Never sync or delete ripsync's own metadata directory at the dst root.
+    src_entries.retain(|e| !e.rel.starts_with(RIPSYNC_DIR));
 
     // Empty-source guard: never mirror deletions from nothing.
     if opts.delete && src_entries.is_empty() {
         return Err(Error::EmptySource(src.to_path_buf()));
     }
 
-    // `--delete` still needs a live walk to discover files created outside Ferry.
+    // `--delete` still needs a live walk to discover files created outside ripsync.
     if opts.index && !opts.delete {
         if let Some(manifest) = Manifest::load(dst) {
             return Ok(plan_from_manifest(src, dst, &src_entries, &manifest, opts));
@@ -180,7 +180,7 @@ pub fn build_plan_controlled<R: Reporter>(
     reporter.event(Event::PlanningProgress {
         entries: src_entries.len() + dst_entries.len(),
     });
-    dst_entries.retain(|e| !e.rel.starts_with(FERRY_DIR));
+    dst_entries.retain(|e| !e.rel.starts_with(RIPSYNC_DIR));
     let dst_map: HashMap<&Path, &Entry> =
         dst_entries.iter().map(|e| (e.rel.as_path(), e)).collect();
 

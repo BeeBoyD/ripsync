@@ -1,7 +1,7 @@
 # Architecture
 
-Ferry is a Cargo workspace with a terminal-independent engine in `ferry-core`
-and presentation/argument handling in `ferry`.
+ripsync is a Cargo workspace with a terminal-independent engine in `ripsync-core`
+and presentation/argument handling in `ripsync`.
 
 ## Run Lifecycle
 
@@ -19,9 +19,9 @@ returns `Error::Cancelled` after cancellation. Existing `build_plan` and
 
 ## Manifest V3
 
-`.ferry/manifest.bin` is an atomic full snapshot. The first successful sync
+`.ripsync/manifest.bin` is an atomic full snapshot. The first successful sync
 writes it using a temporary file and rename. Later successful runs append
-records to `.ferry/manifest.journal`.
+records to `.ripsync/manifest.journal`.
 
 Each journal record is:
 

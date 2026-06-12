@@ -1,12 +1,9 @@
-//! Ferry CLI entry point: parse args, build a plan, apply it.
+//! ripsync CLI library: argument parsing, planning, applying, reporting.
+//!
+//! The `ripsync` binary and the opt-in `rs` short alias are both thin wrappers
+//! over [`main`], so the entire program lives here in the library.
 
-/// Global allocator: mimalloc speeds up the alloc-heavy parallel walk. Opt out
-/// with `--features system-malloc`.
-#[cfg(not(feature = "system-malloc"))]
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-mod args;
+pub mod args;
 mod reporter;
 mod tui;
 
@@ -14,17 +11,19 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
-use ferry_core::apply::{ApplyOptions, MetadataOptions, apply_plan_controlled};
-use ferry_core::index::Manifest;
-use ferry_core::plan::{PlanOptions, build_plan_controlled};
-use ferry_core::report::{Event, Reporter, RunPhase, RunStatus};
-use ferry_core::verify::{VerificationSummary, verify};
-use ferry_core::{Error, RunControl};
+use ripsync_core::apply::{ApplyOptions, MetadataOptions, apply_plan_controlled};
+use ripsync_core::index::Manifest;
+use ripsync_core::plan::{PlanOptions, build_plan_controlled};
+use ripsync_core::report::{Event, Reporter, RunPhase, RunStatus};
+use ripsync_core::verify::{VerificationSummary, verify};
+use ripsync_core::{Error, RunControl};
 
 use args::{Args, OutputFormat};
 use reporter::CliReporter;
 
-fn main() {
+/// Process entry point shared by every binary: runs [`run`] and maps errors to
+/// exit codes (130 on cancellation, 1 otherwise).
+pub fn main() {
     if let Err(error) = run() {
         if error
             .downcast_ref::<Error>()
@@ -42,10 +41,10 @@ fn run() -> Result<()> {
     init_tracing(args.verbose);
 
     if args.bwlimit.is_some() {
-        bail!("--bwlimit is not supported in Ferry 0.3");
+        bail!("--bwlimit is not supported in ripsync 0.3");
     }
     if args.partial {
-        bail!("--partial is not supported in Ferry 0.3");
+        bail!("--partial is not supported in ripsync 0.3");
     }
 
     let threads = args.thread_count();

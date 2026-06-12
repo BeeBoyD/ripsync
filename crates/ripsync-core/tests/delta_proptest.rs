@@ -1,7 +1,7 @@
 //! Property test: applying an encoded delta always reconstructs `new`.
 
-use ferry_core::delta::{apply, encode};
 use proptest::prelude::*;
+use ripsync_core::delta::{apply, encode};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]

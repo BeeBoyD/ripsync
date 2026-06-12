@@ -5,9 +5,9 @@ use std::io::Write;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use ferry_core::plan::{Action, SyncPlan};
-use ferry_core::report::{Event, Reporter, RunPhase, RunStatus, Stats};
-use ferry_core::verify::VerificationSummary;
+use ripsync_core::plan::{Action, SyncPlan};
+use ripsync_core::report::{Event, Reporter, RunPhase, RunStatus, Stats};
+use ripsync_core::verify::VerificationSummary;
 
 use crate::args::OutputFormat;
 

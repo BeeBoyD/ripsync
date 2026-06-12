@@ -1,6 +1,6 @@
 [package]
-name = "ferry-core"
-description = "Core sync logic for Ferry: delta engine, parallel walk, plan/apply."
+name = "ripsync-core"
+description = "Core sync logic for ripsync: delta engine, parallel walk, plan/apply."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

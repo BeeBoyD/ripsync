@@ -1,6 +1,8 @@
-# Ferry
+# ripsync
 
-Ferry is a local directory synchronization tool written in Rust. Version 0.3
+> rsync's superpower, none of its footguns.
+
+ripsync is a local directory synchronization tool written in Rust. Version 0.3
 focuses on operator control, indexed re-syncs, and optional post-copy
 verification. Remote sync and watch mode are not implemented.
 
@@ -8,26 +10,30 @@ verification. Remote sync and watch mode are not implemented.
 
 ```sh
 cargo build --release
-./target/release/ferry SOURCE DESTINATION
+./target/release/ripsync SOURCE DESTINATION
 ```
+
+An optional short alias `rs` (same program) can be built with
+`cargo build --features rs-alias`. It is off by default and packagers install it
+only where it does not collide with the BSD `rs` reshape utility.
 
 Useful examples:
 
 ```sh
 # Preview without changing the destination
-ferry SOURCE DESTINATION --dry-run
+ripsync SOURCE DESTINATION --dry-run
 
 # Mirror deletions in an interactive terminal
-ferry SOURCE DESTINATION --delete
+ripsync SOURCE DESTINATION --delete
 
 # Automation must approve deletion explicitly
-ferry SOURCE DESTINATION --delete --yes --no-tui
+ripsync SOURCE DESTINATION --delete --yes --no-tui
 
 # Hash changed files after copying
-ferry SOURCE DESTINATION --verify changed
+ripsync SOURCE DESTINATION --verify changed
 
 # Compare complete trees after copying
-ferry SOURCE DESTINATION --verify all
+ripsync SOURCE DESTINATION --verify all
 ```
 
 The TUI starts automatically for interactive human output. Use `--no-tui`,
@@ -89,7 +95,7 @@ Warm-cache measurements from June 12, 2026 used five runs per configuration on
 an AMD Ryzen 7 9800X3D with 30 GiB RAM, Linux 7.0.3, and rsync 3.4.2. Tiny-file
 runs used `tmpfs`; the 10 GiB run used `fuseblk`.
 
-| Scenario | Ferry uring median | Ferry portable median | rsync median |
+| Scenario | ripsync uring median | ripsync portable median | rsync median |
 |---|---:|---:|---:|
 | 100k tiny, initial | 0.568 s | 0.688 s | 0.657 s |
 | 1M tiny, initial | 5.568 s | 6.889 s | 6.065 s |
@@ -97,7 +103,7 @@ runs used `tmpfs`; the 10 GiB run used `fuseblk`.
 | 1M tree, 100 changed | 1.328 s | 1.414 s | 1.346 s |
 
 The indexed re-sync median improved 60.1% for uring and 58.2% for portable
-against the previous Ferry measurements, passing the 15% target. Portable
+against the previous ripsync measurements, passing the 15% target. Portable
 initial-copy medians regressed 29.8–100.2%, so v0.3 does not meet the stated 5%
 initial-copy regression guardrail. Explicit uring meets that guardrail in all
 three initial-copy scenarios.

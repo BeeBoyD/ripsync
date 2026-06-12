@@ -1,7 +1,7 @@
 //! Metadata preservation and the destination-containment safety checks.
 //!
 //! Containment is the defence against the rsync symlink path-traversal CVE class
-//! (CVE-2024-12087/12088): before Ferry writes a file, creates a symlink, or
+//! (CVE-2024-12087/12088): before ripsync writes a file, creates a symlink, or
 //! deletes anything, the *real* parent directory of the target must resolve to a
 //! location inside the destination root. A pre-existing symlink in the
 //! destination that redirects a write outside the root is therefore refused
@@ -26,7 +26,7 @@ pub enum FileTypeKind {
     Other,
 }
 
-/// Minimal metadata Ferry needs per entry: type, size, mtime, mode, and
+/// Minimal metadata ripsync needs per entry: type, size, mtime, mode, and
 /// inode/device (for hardlink detection and the persistent index).
 #[derive(Debug, Clone, Copy)]
 pub struct MinMeta {

@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/ferry-core", "crates/ferry"]
+members = ["crates/ripsync-core", "crates/ripsync"]
 
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-authors = ["Ferry contributors"]
-repository = "https://github.com/ferry-sync/ferry"
+authors = ["ripsync contributors"]
+repository = "https://github.com/beeboyd/ripsync"
 rust-version = "1.85"
 
 [workspace.dependencies]

@@ -1,4 +1,4 @@
-//! Ferry core: pure sync logic — delta engine, checksums, parallel walk,
+//! ripsync core: pure sync logic — delta engine, checksums, parallel walk,
 //! plan/apply, metadata and symlink-containment safety.
 //!
 //! No terminal I/O lives here; the CLI crate owns presentation.

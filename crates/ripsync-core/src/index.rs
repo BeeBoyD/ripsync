@@ -10,11 +10,11 @@ use crate::meta::{FileTypeKind, canonical_root, contained_target, meta_min};
 use crate::plan::{Action, SyncPlan};
 use crate::walk::{Entry, EntryKind};
 
-/// Directory under the destination root that holds Ferry metadata.
-pub const FERRY_DIR: &str = ".ferry";
-/// Snapshot filename within [`FERRY_DIR`].
+/// Directory under the destination root that holds ripsync metadata.
+pub const RIPSYNC_DIR: &str = ".ripsync";
+/// Snapshot filename within [`RIPSYNC_DIR`].
 pub const MANIFEST_FILE: &str = "manifest.bin";
-/// Delta journal filename within [`FERRY_DIR`].
+/// Delta journal filename within [`RIPSYNC_DIR`].
 pub const JOURNAL_FILE: &str = "manifest.journal";
 const FORMAT_VERSION: u32 = 3;
 const COMPACT_BYTES: u64 = 64 * 1024 * 1024;
@@ -71,13 +71,13 @@ enum Delta {
 /// Path to the snapshot under `dst`.
 #[must_use]
 pub fn manifest_path(dst: &Path) -> PathBuf {
-    dst.join(FERRY_DIR).join(MANIFEST_FILE)
+    dst.join(RIPSYNC_DIR).join(MANIFEST_FILE)
 }
 
 /// Path to the append-only journal under `dst`.
 #[must_use]
 pub fn journal_path(dst: &Path) -> PathBuf {
-    dst.join(FERRY_DIR).join(JOURNAL_FILE)
+    dst.join(RIPSYNC_DIR).join(JOURNAL_FILE)
 }
 
 fn hash_file(path: &Path) -> io::Result<[u8; 32]> {
@@ -95,7 +95,7 @@ fn hash_file(path: &Path) -> io::Result<[u8; 32]> {
 
 fn metadata_dir(dst: &Path) -> crate::Result<(PathBuf, PathBuf)> {
     let root = canonical_root(dst)?;
-    let requested = root.join(FERRY_DIR);
+    let requested = root.join(RIPSYNC_DIR);
     match std::fs::symlink_metadata(&requested) {
         Ok(meta) if !meta.is_dir() => return Err(crate::Error::Containment(requested)),
         Ok(_) => {}

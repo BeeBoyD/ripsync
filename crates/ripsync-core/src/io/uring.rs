@@ -1,6 +1,6 @@
 //! `io_uring` batched small-file copy backend (Linux only).
 //!
-//! This is the one place in `ferry-core` where raw `unsafe` is justified: the
+//! This is the one place in `ripsync-core` where raw `unsafe` is justified: the
 //! `io_uring` submission interface requires pointing the kernel at user buffers.
 //! The rest of the crate keeps `#![forbid(unsafe_code)]`; here we opt in locally
 //! and annotate every `unsafe` block with a `// SAFETY:` rationale.

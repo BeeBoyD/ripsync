@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
-/// Ferry — a fast, memory-safe rsync alternative (local sync milestone).
+/// ripsync — a fast, memory-safe rsync alternative (local sync milestone).
 #[derive(Debug, Clone, Parser)]
-#[command(name = "ferry", version, about, long_about = None)]
+#[command(name = "ripsync", version, about, long_about = None)]
 pub struct Args {
     /// Source directory.
     pub src: PathBuf,
@@ -135,7 +135,7 @@ pub enum ReflinkArg {
     Never,
 }
 
-impl From<ReflinkArg> for ferry_core::copy::ReflinkMode {
+impl From<ReflinkArg> for ripsync_core::copy::ReflinkMode {
     fn from(a: ReflinkArg) -> Self {
         match a {
             ReflinkArg::Auto => Self::Auto,
@@ -156,7 +156,7 @@ pub enum FsyncArg {
     Never,
 }
 
-impl From<FsyncArg> for ferry_core::copy::FsyncMode {
+impl From<FsyncArg> for ripsync_core::copy::FsyncMode {
     fn from(a: FsyncArg) -> Self {
         match a {
             FsyncArg::Auto => Self::Auto,
@@ -188,7 +188,7 @@ pub enum VerifyArg {
     All,
 }
 
-impl From<VerifyArg> for ferry_core::verify::VerifyMode {
+impl From<VerifyArg> for ripsync_core::verify::VerifyMode {
     fn from(value: VerifyArg) -> Self {
         match value {
             VerifyArg::None => Self::None,
@@ -198,7 +198,7 @@ impl From<VerifyArg> for ferry_core::verify::VerifyMode {
     }
 }
 
-impl From<BackendArg> for ferry_core::apply::Backend {
+impl From<BackendArg> for ripsync_core::apply::Backend {
     fn from(a: BackendArg) -> Self {
         match a {
             BackendArg::Auto => Self::Auto,

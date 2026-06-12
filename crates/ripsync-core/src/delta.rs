@@ -1,4 +1,4 @@
-//! The delta engine — Ferry's crown jewel.
+//! The delta engine — ripsync's crown jewel.
 //!
 //! Given an `old` buffer and a `new` buffer, [`encode`] produces a compact
 //! [`Delta`]: a sequence of [`Op::Copy`] (reuse a block of `old`) and
