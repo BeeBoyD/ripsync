@@ -21,6 +21,59 @@ use ripsync_core::{Error, RunControl};
 use args::{Args, OutputFormat};
 use reporter::CliReporter;
 
+/// The fully-built clap [`clap::Command`] for ripsync. Used by the man-page and
+/// shell-completion generators (the hidden `_gen` subcommand and the `xtask`).
+#[must_use]
+pub fn command() -> clap::Command {
+    use clap::CommandFactory;
+    Args::command()
+}
+
+/// Write the man page (`ripsync.1`) and bash/zsh/fish/powershell completions
+/// into `dir`, creating it if needed.
+///
+/// # Errors
+///
+/// Returns an I/O error if the directory or any asset cannot be written.
+pub fn write_assets(dir: &std::path::Path) -> std::io::Result<()> {
+    use clap_complete::Shell;
+
+    std::fs::create_dir_all(dir)?;
+
+    let mut man_out = Vec::new();
+    clap_mangen::Man::new(command()).render(&mut man_out)?;
+    std::fs::write(dir.join("ripsync.1"), man_out)?;
+
+    for shell in [Shell::Bash, Shell::Zsh, Shell::Fish, Shell::PowerShell] {
+        clap_complete::generate_to(shell, &mut command(), "ripsync", dir)?;
+    }
+    Ok(())
+}
+
+/// Handle the hidden `ripsync _gen <man|completions> [shell]` subcommand by
+/// streaming the requested asset to stdout. `rest` is argv after `_gen`.
+fn run_gen(rest: &[String]) -> Result<()> {
+    use std::io::stdout;
+
+    match rest.first().map(String::as_str) {
+        Some("man") => {
+            clap_mangen::Man::new(command())
+                .render(&mut stdout())
+                .context("rendering man page")?;
+        }
+        Some("completions") => {
+            let shell: clap_complete::Shell = rest
+                .get(1)
+                .ok_or_else(|| anyhow::anyhow!("usage: ripsync _gen completions <shell>"))?
+                .parse()
+                .map_err(|e| anyhow::anyhow!("unknown shell: {e}"))?;
+            clap_complete::generate(shell, &mut command(), "ripsync", &mut stdout());
+        }
+        _ => bail!("usage: ripsync _gen <man|completions> [shell]"),
+    }
+    Ok(())
+}
+
 /// Process entry point shared by every binary: runs [`run`] and maps errors to
 /// exit codes (130 on cancellation, 1 otherwise).
 pub fn main() {
@@ -37,6 +90,13 @@ pub fn main() {
 }
 
 fn run() -> Result<()> {
+    // Hidden asset generator, intercepted before clap so it does not appear in
+    // help or pollute the flat argument parser: `ripsync _gen <man|completions>`.
+    let raw: Vec<String> = std::env::args().collect();
+    if raw.get(1).map(String::as_str) == Some("_gen") {
+        return run_gen(&raw[2..]);
+    }
+
     let args = Args::parse();
     init_tracing(args.verbose);
 

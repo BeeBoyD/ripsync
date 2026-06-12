@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ripsync-core", "crates/ripsync"]
+members = ["crates/ripsync-core", "crates/ripsync", "xtask"]
 
 [workspace.package]
 version = "0.3.0"
@@ -25,6 +25,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+clap_mangen = "0.2"
 ratatui = "0.29"
 crossterm = "0.28"
 globset = "0.4"
