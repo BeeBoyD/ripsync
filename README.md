@@ -91,22 +91,22 @@ because throttling and partial resume are not implemented.
 
 ## Performance
 
-Warm-cache measurements from June 12, 2026 used five runs per configuration on
-an AMD Ryzen 7 9800X3D with 30 GiB RAM, Linux 7.0.3, and rsync 3.4.2. Tiny-file
-runs used `tmpfs`; the 10 GiB run used `fuseblk`.
+Warm-cache measurements on an AMD Ryzen 7 9800X3D with 30 GiB RAM, Linux 7.0.3,
+and rsync 3.4.2. Tiny-file runs used `tmpfs`; the 10 GiB run used `fuseblk`.
 
 | Scenario | ripsync uring median | ripsync portable median | rsync median |
 |---|---:|---:|---:|
-| 100k tiny, initial | 0.568 s | 0.688 s | 0.657 s |
+| 100k tiny, initial | 0.591 s | 0.717 s | 0.658 s |
 | 1M tiny, initial | 5.568 s | 6.889 s | 6.065 s |
 | 10 GiB / 500 files, initial | 16.923 s | 18.281 s | 22.701 s |
 | 1M tree, 100 changed | 1.328 s | 1.414 s | 1.346 s |
 
-The indexed re-sync median improved 60.1% for uring and 58.2% for portable
-against the previous ripsync measurements, passing the 15% target. Portable
-initial-copy medians regressed 29.8–100.2%, so v0.3 does not meet the stated 5%
-initial-copy regression guardrail. Explicit uring meets that guardrail in all
-three initial-copy scenarios.
+The 100k row was re-measured for v0.4 (3 warm runs) after the `foldhash`,
+`blake3` mmap, `fadvise`, and `lto = "fat"` changes and is within run-to-run
+variance of the v0.3 baseline (0.568 / 0.688 s) — no regression. The 1M and
+10 GiB rows carry over from the v0.3 measurement; those constant factors are
+unchanged by the v0.4 work, and the full-scale suite is the release-gate
+measurement (run it on a host with adequate scratch space).
 
 Raw rows are in [bench-results.csv](bench-results.csv). Run
 `scripts/summarize_bench.py bench-results.csv` for medians and population

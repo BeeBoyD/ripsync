@@ -172,11 +172,29 @@ fn sparse_copy(src: &Path, tmp: &Path) -> io::Result<u64> {
     Ok(len)
 }
 
+/// Hint the kernel to read a large source sequentially and prefetch it. No-op
+/// off Linux and for small files (where the syscalls are not worth it).
+#[cfg(not(windows))]
+fn advise_sequential(file: &File, len: u64) {
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::fs::{Advice, fadvise};
+        if len >= 8 * 1024 * 1024 {
+            let span = std::num::NonZeroU64::new(len);
+            let _ = fadvise(file, 0, span, Advice::Sequential);
+            let _ = fadvise(file, 0, span, Advice::WillNeed);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (file, len);
+}
+
 /// Portable buffered copy with a large buffer.
 #[cfg(not(windows))]
 fn buffered_copy(src: &Path, tmp: &Path) -> io::Result<u64> {
     let reader = File::open(src)?;
     let writer = File::create(tmp)?;
+    advise_sequential(&reader, reader.metadata()?.len());
     let mut r = BufReader::with_capacity(BUF, reader);
     let mut w = BufWriter::with_capacity(BUF, writer);
     let n = io::copy(&mut r, &mut w)?;
@@ -190,6 +208,7 @@ fn copy_file_range_all(src: &Path, tmp: &Path) -> io::Result<u64> {
     let infile = File::open(src)?;
     let outfile = File::create(tmp)?;
     let len = infile.metadata()?.len();
+    advise_sequential(&infile, len);
     let mut remaining = len;
     while remaining > 0 {
         let chunk = usize::try_from(remaining.min(1 << 30)).unwrap_or(usize::MAX);

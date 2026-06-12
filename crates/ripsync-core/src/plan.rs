@@ -1,9 +1,11 @@
 //! Build a [`SyncPlan`]: classify every source entry as copy/update/skip and,
 //! when `--delete` is set, collect destination entries to remove.
 
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+// Plan classification keys are local relative paths and (dev, ino) pairs, never
+// attacker-controlled, so foldhash's faster non-DoS-hardened hashing is safe.
+use foldhash::{HashMap, HashMapExt, HashSet};
 use globset::GlobSet;
 use rayon::prelude::*;
 
@@ -84,10 +86,19 @@ impl SyncPlan {
     }
 }
 
-/// Read a whole file and return its BLAKE3 digest, or `None` on read error.
+/// BLAKE3 digest of a file, or `None` on read error. Large files use a
+/// memory-mapped, rayon-parallel pass; small files read once into memory.
 fn file_hash(path: &Path) -> Option<[u8; 32]> {
-    let bytes = std::fs::read(path).ok()?;
-    Some(*blake3::hash(&bytes).as_bytes())
+    const MMAP_HASH_THRESHOLD: u64 = 16 * 1024 * 1024;
+    let len = std::fs::metadata(path).ok()?.len();
+    let mut hasher = blake3::Hasher::new();
+    if len >= MMAP_HASH_THRESHOLD {
+        hasher.update_mmap_rayon(path).ok()?;
+    } else {
+        let bytes = std::fs::read(path).ok()?;
+        hasher.update(&bytes);
+    }
+    Some(*hasher.finalize().as_bytes())
 }
 
 /// Decide whether a source and destination file differ.
