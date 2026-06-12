@@ -36,6 +36,8 @@ reflink-copy = "0.1"
 rustix = { version = "1", features = ["fs"] }
 bincode = "1"
 xattr = "1"
+mimalloc = "0.1"
+io-uring = "0.6"
 
 [profile.release]
 lto = "thin"

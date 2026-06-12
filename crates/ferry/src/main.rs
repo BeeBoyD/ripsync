@@ -1,5 +1,11 @@
 //! Ferry CLI entry point: parse args, build a plan, apply it.
 
+/// Global allocator: mimalloc speeds up the alloc-heavy parallel walk. Opt out
+/// with `--features system-malloc`.
+#[cfg(not(feature = "system-malloc"))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod args;
 mod reporter;
 mod tui;

@@ -25,6 +25,11 @@ serde = { workspace = true }
 serde_json.workspace = true
 toml.workspace = true
 num_cpus.workspace = true
+mimalloc.workspace = true
+
+[features]
+# Use the system allocator instead of mimalloc.
+system-malloc = []
 
 [dev-dependencies]
 assert_cmd.workspace = true
