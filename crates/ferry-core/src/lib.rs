@@ -6,6 +6,8 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod checksum;
+pub mod delta;
 pub mod error;
 
 pub use error::{Error, Result};
