@@ -26,7 +26,7 @@ path = "src/rs.rs"
 required-features = ["rs-alias"]
 
 [dependencies]
-ripsync-core = { path = "../ripsync-core", version = "0.3.0" }
+ripsync-core = { path = "../ripsync-core", version = "0.4.0" }
 anyhow.workspace = true
 globset.workspace = true
 clap.workspace = true
