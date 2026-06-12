@@ -1,6 +1,6 @@
 [package]
-name = "ferry-cli"
-description = "Ferry CLI: a fast, memory-safe rsync alternative."
+name = "ferry"
+description = "Ferry: a fast, memory-safe rsync alternative."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
