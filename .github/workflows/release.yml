@@ -1,0 +1,108 @@
+name: Release
+
+# Build cross-platform archives, man page, and completions on every `v*` tag and
+# publish them to a GitHub Release with SHA-256 checksums.
+#
+# This is a hand-authored approximation of the workflow `cargo dist` generates
+# from `[workspace.metadata.dist]`. Run `dist init && dist generate` to replace
+# it with the canonical tool output (which also wires the Homebrew tap and MSI).
+# See docs/releasing.md.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cross-linker (aarch64 linux)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p .cargo
+          printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\n' >> .cargo/config.toml
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p ripsync
+
+      - name: Generate man page + completions
+        run: cargo run --release -p xtask -- dist-assets
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          name="ripsync-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "staging/$name"
+          cp "target/${{ matrix.target }}/release/ripsync" "staging/$name/"
+          cp -r dist/assets "staging/$name/assets"
+          cp README.md LICENSE-MIT LICENSE-APACHE "staging/$name/"
+          tar -C staging -czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "ripsync-${{ github.ref_name }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force "staging/$name" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/ripsync.exe" "staging/$name/"
+          Copy-Item -Recurse dist/assets "staging/$name/assets"
+          Copy-Item README.md,LICENSE-MIT,LICENSE-APACHE "staging/$name/"
+          Compress-Archive -Path "staging/$name" -DestinationPath "$name.zip"
+          (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Out-File "$name.zip.sha256" -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ripsync-${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.tar.gz.sha256
+            *.zip
+            *.zip.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.tar.gz.sha256
+            artifacts/*.zip
+            artifacts/*.zip.sha256
+          generate_release_notes: true

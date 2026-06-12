@@ -60,3 +60,29 @@ opt-level = 3
 # Keep unwinding: the RAII terminal guard and the io_uring / Windows-handle Drop
 # cleanups must run on panic. Do NOT switch to panic = "abort".
 panic = "unwind"
+
+# The profile cargo-dist uses for release builds; inherits the tuned release
+# profile above.
+[profile.dist]
+inherits = "release"
+
+# cargo-dist configuration. Regenerate the release workflow after edits with
+# `dist init` / `dist generate` (see docs/releasing.md).
+[workspace.metadata.dist]
+cargo-dist-version = "0.28.0"
+ci = ["github"]
+installers = ["shell", "powershell", "homebrew", "msi"]
+tap = "beeboyd/homebrew-tap"
+publish-jobs = ["homebrew"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+# Attach the generated man page + shell completions to every release archive.
+include = ["dist/assets"]
+# Embed an SBOM in release binaries (see Step 10 / deny.toml).
+cargo-auditable = true
+install-updater = false
