@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 // Plan classification keys are local relative paths and (dev, ino) pairs, never
 // attacker-controlled, so foldhash's faster non-DoS-hardened hashing is safe.
 use foldhash::{HashMap, HashMapExt, HashSet};
-use globset::GlobSet;
 use rayon::prelude::*;
+
+use crate::filter::Filter;
 
 use crate::index::{Manifest, RIPSYNC_DIR};
 use crate::report::{Event, NullReporter, Reporter, RunPhase};
@@ -135,13 +136,13 @@ pub fn build_plan(
     src: &Path,
     dst: &Path,
     opts: PlanOptions,
-    excludes: &GlobSet,
+    filter: &Filter,
 ) -> Result<SyncPlan> {
     build_plan_controlled(
         src,
         dst,
         opts,
-        excludes,
+        filter,
         &RunControl::default(),
         &NullReporter,
     )
@@ -156,13 +157,13 @@ pub fn build_plan_controlled<R: Reporter>(
     src: &Path,
     dst: &Path,
     opts: PlanOptions,
-    excludes: &GlobSet,
+    filter: &Filter,
     control: &RunControl,
     reporter: &R,
 ) -> Result<SyncPlan> {
     reporter.event(Event::Phase(RunPhase::Planning));
     control.checkpoint()?;
-    let mut src_entries = walk_controlled(src, opts.threads, excludes, control)?;
+    let mut src_entries = walk_controlled(src, opts.threads, filter, control)?;
     control.checkpoint()?;
     reporter.event(Event::PlanningProgress {
         entries: src_entries.len(),
@@ -183,7 +184,7 @@ pub fn build_plan_controlled<R: Reporter>(
     }
 
     let mut dst_entries = if dst.exists() {
-        walk_controlled(dst, opts.threads, excludes, control)?
+        walk_controlled(dst, opts.threads, filter, control)?
     } else {
         Vec::new()
     };

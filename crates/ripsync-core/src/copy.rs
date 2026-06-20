@@ -198,7 +198,14 @@ fn buffered_copy(src: &Path, tmp: &Path) -> io::Result<u64> {
     let mut r = BufReader::with_capacity(BUF, reader);
     let mut w = BufWriter::with_capacity(BUF, writer);
     let n = io::copy(&mut r, &mut w)?;
-    w.into_inner()?.sync_all().ok(); // best-effort; durability handled by caller
+    // Flush the buffer to the OS, but do NOT force a device flush here: per-file
+    // durability is the caller's job (`finalize_file` fsyncs each file in
+    // `FsyncMode::Always`; `Auto` fsyncs the touched directories once). An
+    // unconditional `sync_all` here both double-fsyncs in `Always` and violates
+    // the documented `Auto`/`Never` "skip per-file fsync" contract — and on
+    // macOS it lowers to `F_FULLFSYNC` (a full drive flush), which made the
+    // non-reflink path pathologically slow on many small files.
+    w.into_inner()?;
     Ok(n)
 }
 

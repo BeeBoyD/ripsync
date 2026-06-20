@@ -7,8 +7,9 @@
 use std::path::{Path, PathBuf};
 
 use filetime::FileTime;
-use globset::GlobSet;
 use rayon::prelude::*;
+
+use crate::filter::Filter;
 
 use crate::meta::{FileTypeKind, meta_min};
 use crate::{Error, Result, RunControl};
@@ -64,15 +65,15 @@ impl Entry {
 /// Walk `root` in parallel, returning entries sorted by relative path (so every
 /// parent directory precedes its children).
 ///
-/// `threads` sets the worker-pool size (0 ⇒ `jwalk` default). `excludes` drops
-/// any entry whose relative path matches.
+/// `threads` sets the worker-pool size (0 ⇒ `jwalk` default). `filter` drops
+/// any file/symlink whose relative path is excluded.
 ///
 /// # Errors
 ///
 /// Returns an error if `root` cannot be read, or if any entry's metadata cannot
 /// be stat-ed.
-pub fn walk(root: &Path, threads: usize, excludes: &GlobSet) -> Result<Vec<Entry>> {
-    walk_controlled(root, threads, excludes, &RunControl::default())
+pub fn walk(root: &Path, threads: usize, filter: &Filter) -> Result<Vec<Entry>> {
+    walk_controlled(root, threads, filter, &RunControl::default())
 }
 
 /// Walk a tree with a cooperative checkpoint before processing each entry.
@@ -83,7 +84,7 @@ pub fn walk(root: &Path, threads: usize, excludes: &GlobSet) -> Result<Vec<Entry
 pub fn walk_controlled(
     root: &Path,
     threads: usize,
-    excludes: &GlobSet,
+    filter: &Filter,
     control: &RunControl,
 ) -> Result<Vec<Entry>> {
     let parallelism = if threads == 0 {
@@ -112,7 +113,7 @@ pub fn walk_controlled(
             .map_err(|_| Error::Containment(path.clone()))?
             .to_path_buf();
 
-        if !excludes.is_empty() && excludes.is_match(&rel) {
+        if !filter.is_empty() && filter.is_excluded(&rel, dent.file_type().is_dir()) {
             continue;
         }
 

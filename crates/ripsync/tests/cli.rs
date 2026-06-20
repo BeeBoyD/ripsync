@@ -169,6 +169,85 @@ fn exclude_skips_matching_files() {
 }
 
 #[test]
+fn include_then_exclude_keeps_only_matches() {
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    write(&src.join("main.rs"), "fn main() {}");
+    write(&src.join("notes.txt"), "notes");
+    write(&src.join("nested/lib.rs"), "pub fn x() {}");
+
+    ripsync()
+        .args([
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "--no-tui",
+            "--include",
+            "*.rs",
+            "--exclude",
+            "*",
+        ])
+        .assert()
+        .success();
+
+    assert!(dst.join("main.rs").exists());
+    assert!(dst.join("nested/lib.rs").exists());
+    assert!(!dst.join("notes.txt").exists(), "non-.rs file excluded");
+}
+
+#[test]
+fn files_from_transfers_exactly_listed_paths() {
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    write(&src.join("a.txt"), "a");
+    write(&src.join("b.txt"), "b");
+    write(&src.join("sub/c.txt"), "c");
+    let list = tmp.path().join("list.txt");
+    write(&list, "a.txt\nsub/c.txt\n");
+
+    ripsync()
+        .args([
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "--no-tui",
+            "--files-from",
+            list.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    assert!(dst.join("a.txt").exists());
+    assert!(dst.join("sub/c.txt").exists());
+    assert!(!dst.join("b.txt").exists(), "unlisted file not transferred");
+}
+
+#[test]
+fn ordered_filter_rule_protects_before_exclude() {
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    write(&src.join("keep.log"), "keep me");
+    write(&src.join("drop.log"), "drop me");
+
+    ripsync()
+        .args([
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "--no-tui",
+            "--filter",
+            "+ keep.log",
+            "--filter",
+            "- *.log",
+        ])
+        .assert()
+        .success();
+
+    assert!(dst.join("keep.log").exists(), "protected by earlier + rule");
+    assert!(!dst.join("drop.log").exists(), "dropped by - *.log");
+}
+
+#[test]
 fn json_output_is_valid() {
     let tmp = tempdir().unwrap();
     let src = tmp.path().join("src");

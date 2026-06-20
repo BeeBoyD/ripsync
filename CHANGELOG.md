@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.1.0 - 2026-06-20
+
+### Added
+
+- **Filters.** New `--include`, `--filter`, and `--files-from` on top of the
+  existing `--exclude`. Rules are matched against the relative path, first match
+  wins, default-include; precedence is `--filter` (ordered `+`/`-`) → `--include`
+  → `--exclude`. `--exclude` now also drops everything beneath a matching
+  directory. The unified matcher lives in `ripsync_core::filter::Filter`.
+- **Watch mode.** `--watch` re-runs the incremental sync whenever the source
+  changes, coalescing bursts over a `--debounce` window (default 300 ms). Local
+  transfers only; Ctrl-C stops the loop.
+
+### Fixed
+
+- **Portable copy no longer force-fsyncs every file.** The buffered copy used to
+  call `sync_all` unconditionally, which both double-fsynced in
+  `--fsync always` and violated the `auto`/`never` "skip per-file fsync"
+  contract. On macOS that `sync_all` lowered to `F_FULLFSYNC` (a full drive
+  flush), making the non-reflink path pathologically slow on many small files
+  (≈30× on the benchmark). Durability is now solely the caller's responsibility,
+  consistent across the reflink / `copy_file_range` / buffered strategies.
+
 ## 1.0.0 - 2026-06-20
 
 ### Added

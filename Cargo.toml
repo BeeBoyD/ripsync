@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/ripsync-core", "crates/ripsync", "xtask"]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["ripsync contributors"]
@@ -30,6 +30,7 @@ clap_mangen = "0.2"
 ratatui = "0.29"
 crossterm = "0.28"
 globset = "0.4"
+notify = "6"
 tempfile = "3"
 assert_cmd = "2"
 proptest = "1"

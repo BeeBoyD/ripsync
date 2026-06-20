@@ -2,10 +2,11 @@
 
 > rsync's superpower, none of its footguns.
 
-ripsync is a fast, memory-safe local directory synchronization tool written in
-Rust. It mirrors a source tree into a destination using copy-on-write reflinks
-where available, a persistent index for quick re-syncs, an operator TUI with
-pause/cancel/verify, and optional post-copy verification.
+ripsync is a fast, memory-safe directory synchronization tool written in Rust.
+It mirrors a source tree into a destination — locally or over SSH — using
+copy-on-write reflinks where available, a persistent index for quick re-syncs,
+rolling-checksum delta transfer with optional zstd compression for remote runs,
+an operator TUI with pause/cancel/verify, and optional post-copy verification.
 
 ![ripsync TUI demo](assets/ripsync-demo.gif)
 
@@ -27,5 +28,6 @@ pause/cancel/verify, and optional post-copy verification.
 
 ## Scope
 
-ripsync syncs **local** directories. Remote/network sync and watch mode are not
-implemented and are out of scope for the 0.x line.
+ripsync syncs local directories and remote hosts over SSH (`[user@]host:path`),
+with delta transfer, zstd compression, and bandwidth limiting on the wire. Cloud
+object storage (S3 and compatible) is handled by the sibling tool **ripclone**.

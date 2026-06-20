@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use globset::GlobSetBuilder;
+use ripsync_core::Filter;
 use ripsync_core::apply::{ApplyOptions, MetadataOptions, apply_plan_controlled};
 use ripsync_core::plan::{PlanOptions, build_plan_controlled};
 use ripsync_core::report::{Event, NullReporter, Reporter, RunPhase};
@@ -42,7 +42,7 @@ fn cancellation_during_planning_is_reported() {
         phase: Some(RunPhase::Planning),
         file_start: false,
     };
-    let excludes = GlobSetBuilder::new().build().unwrap();
+    let excludes = Filter::none();
     let result = build_plan_controlled(
         &src,
         &dst,
@@ -60,7 +60,7 @@ fn cancellation_after_an_in_flight_copy_leaves_no_temp_file() {
     let src = temp.path().join("src");
     let dst = temp.path().join("dst");
     write(&src.join("file"), &[7; 4096]);
-    let excludes = GlobSetBuilder::new().build().unwrap();
+    let excludes = Filter::none();
     let plan =
         ripsync_core::plan::build_plan(&src, &dst, PlanOptions::default(), &excludes).unwrap();
     let control = RunControl::default();
@@ -101,7 +101,7 @@ fn cancellation_before_deletion_keeps_stale_entry() {
     write(&src.join("keep"), b"same");
     write(&dst.join("keep"), b"same");
     write(&dst.join("stale"), b"stale");
-    let excludes = GlobSetBuilder::new().build().unwrap();
+    let excludes = Filter::none();
     let plan = ripsync_core::plan::build_plan(
         &src,
         &dst,
@@ -141,7 +141,7 @@ fn verification_reports_content_mismatch_and_can_cancel() {
     let dst = temp.path().join("dst");
     write(&src.join("file"), b"source");
     write(&dst.join("file"), b"destination");
-    let excludes = GlobSetBuilder::new().build().unwrap();
+    let excludes = Filter::none();
     let plan =
         ripsync_core::plan::build_plan(&src, &dst, PlanOptions::default(), &excludes).unwrap();
     let summary = verify(

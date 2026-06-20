@@ -20,8 +20,7 @@ pub mod transport;
 use std::io::{Read, Write};
 use std::path::Path;
 
-use globset::GlobSet;
-
+use crate::filter::Filter;
 use crate::net::proto::{Init, Msg, NetOptions, PROTO_VERSION, Role};
 use crate::net::transport::{recv_msg, send_msg};
 use crate::report::{Reporter, Stats};
@@ -115,7 +114,7 @@ pub(crate) fn handshake_responder<C: Read + Write>(conn: &mut C) -> Result<Init>
 /// Returns a handshake, protocol, walk, or I/O error.
 pub fn run_responder<C: Read + Write, R: Reporter>(
     conn: &mut C,
-    excludes: &GlobSet,
+    filter: &Filter,
     threads: usize,
     control: &RunControl,
     reporter: &R,
@@ -126,14 +125,14 @@ pub fn run_responder<C: Read + Write, R: Reporter>(
         Role::Push => run_receiver(
             conn,
             &init.root,
-            excludes,
+            filter,
             init.options,
             threads,
             control,
             reporter,
         ),
         // Initiator pulled from us: we are the sender.
-        Role::Pull => run_sender(conn, &init.root, excludes, init.options, threads, control),
+        Role::Pull => run_sender(conn, &init.root, filter, init.options, threads, control),
     }
 }
 
@@ -152,16 +151,16 @@ pub fn run_initiator<C: Read + Write, R: Reporter>(
     local_root: &Path,
     remote_root: &Path,
     options: NetOptions,
-    excludes: &GlobSet,
+    filter: &Filter,
     threads: usize,
     control: &RunControl,
     reporter: &R,
 ) -> Result<Stats> {
     handshake_initiator(conn, role, remote_root, options)?;
     match role {
-        Role::Push => run_sender(conn, local_root, excludes, options, threads, control),
+        Role::Push => run_sender(conn, local_root, filter, options, threads, control),
         Role::Pull => run_receiver(
-            conn, local_root, excludes, options, threads, control, reporter,
+            conn, local_root, filter, options, threads, control, reporter,
         ),
     }
 }
