@@ -6,8 +6,7 @@
 //! the sender (reading the remote source). Every path it touches is confined under
 //! the negotiated root by the receiver's containment checks.
 
-use globset::GlobSet;
-
+use crate::filter::Filter;
 use crate::net::run_responder;
 use crate::net::transport::IoDuplex;
 use crate::report::{Reporter, Stats};
@@ -27,6 +26,7 @@ pub fn run_server<R: Reporter>(
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut conn = IoDuplex::new(stdin.lock(), stdout.lock());
-    let excludes = GlobSet::empty();
-    run_responder(&mut conn, &excludes, threads, control, reporter)
+    // The server applies no local filter; the initiator filters its own walk.
+    let filter = Filter::none();
+    run_responder(&mut conn, &filter, threads, control, reporter)
 }

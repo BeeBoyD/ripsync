@@ -38,6 +38,10 @@ pub enum Error {
     #[error("invalid exclude pattern: {0}")]
     Pattern(String),
 
+    /// An include/exclude/files-from filter was invalid.
+    #[error("filter error: {0}")]
+    Filter(String),
+
     /// A delta could not be applied to the supplied basis.
     #[error("delta apply failed: {0}")]
     DeltaApply(String),

@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::thread;
 
-use globset::GlobSet;
+use ripsync_core::Filter;
 use ripsync_core::RunControl;
 use ripsync_core::net::proto::{NetOptions, Role};
 use ripsync_core::net::{duplex_pair, run_initiator, run_responder};
@@ -56,12 +56,12 @@ fn run_transfer(role: Role, local_root: &Path, remote_root: &Path, options: NetO
 
     let server = thread::spawn(move || {
         let ctrl = RunControl::default();
-        let excludes = GlobSet::empty();
+        let excludes = Filter::none();
         run_responder(&mut end_b, &excludes, 0, &ctrl, &NullReporter)
     });
 
     let ctrl = RunControl::default();
-    let excludes = GlobSet::empty();
+    let excludes = Filter::none();
     let stats = run_initiator(
         &mut end_a,
         role,

@@ -25,6 +25,7 @@ pub mod control;
 pub mod copy;
 pub mod delta;
 pub mod error;
+pub mod filter;
 pub mod index;
 pub mod io;
 pub mod meta;
@@ -37,4 +38,5 @@ pub mod walk;
 
 pub use control::RunControl;
 pub use error::{Error, Result};
+pub use filter::Filter;
 pub use report::{Event, Reporter, RunPhase, RunStatus, Stats};

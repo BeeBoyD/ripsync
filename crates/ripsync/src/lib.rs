@@ -8,12 +8,15 @@ mod config;
 mod remote;
 mod reporter;
 mod tui;
+mod watch;
+
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, FromArgMatches};
-use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use ripsync_core::apply::{ApplyOptions, MetadataOptions, apply_plan_controlled};
+use ripsync_core::filter::{Filter, FilterBuilder};
 use ripsync_core::index::Manifest;
 use ripsync_core::plan::{PlanOptions, build_plan_controlled};
 use ripsync_core::report::{Event, Reporter, RunPhase, RunStatus};
@@ -121,13 +124,19 @@ fn run() -> Result<()> {
     }
 
     let threads = args.thread_count();
-    let excludes = build_excludes(&args.exclude)?;
+    let filter = build_filter(&args)?;
 
     // Remote transfer: exactly one of src/dst is a `[user@]host:path` spec.
     let src_loc = remote::parse_location(&args.src.to_string_lossy());
     let dst_loc = remote::parse_location(&args.dst.to_string_lossy());
     if src_loc.is_remote() || dst_loc.is_remote() {
-        return remote::run_remote(&args, threads, &excludes, &src_loc, &dst_loc);
+        return remote::run_remote(&args, threads, &filter, &src_loc, &dst_loc);
+    }
+
+    // Watch mode: continuously re-sync on filesystem change (local only). It
+    // drives the same one-shot pipeline after each debounced batch of events.
+    if args.watch {
+        return watch::run_watch(&args, threads, &filter);
     }
 
     let use_tui = !args.no_tui
@@ -135,9 +144,15 @@ fn run() -> Result<()> {
         && !args.quiet
         && std::io::IsTerminal::is_terminal(&std::io::stdout());
     if use_tui {
-        return tui::run(&args, threads, &excludes);
+        return tui::run(&args, threads, &filter);
     }
 
+    run_local_once(&args, threads, &filter)
+}
+
+/// Execute one complete local sync: plan → optional delete approval → apply →
+/// verify → persist the index. Shared by the one-shot path and `--watch`.
+pub(crate) fn run_local_once(args: &Args, threads: usize, filter: &Filter) -> Result<()> {
     let reporter = CliReporter::new(args.output, args.quiet, args.verbose, args.dry_run);
     let control = RunControl::default();
     let started = std::time::Instant::now();
@@ -151,7 +166,7 @@ fn run() -> Result<()> {
             index: args.index,
             hard_links: args.hard_links,
         },
-        &excludes,
+        filter,
         &control,
         &reporter,
     )
@@ -255,7 +270,7 @@ fn run() -> Result<()> {
     );
 
     if args.stats {
-        print_stats(&args, &stats, &verification, started.elapsed());
+        print_stats(args, &stats, &verification, started.elapsed());
     }
 
     if !verification.mismatches.is_empty() {
@@ -315,20 +330,30 @@ fn human_bytes(bytes: u64) -> String {
     }
 }
 
-/// Compile exclude globs. Each pattern matches both at the root and nested
-/// (`PAT` and `**/PAT`), so `*.log` excludes log files anywhere in the tree.
-fn build_excludes(patterns: &[String]) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for pat in patterns {
-        builder.add(Glob::new(pat).with_context(|| format!("invalid exclude pattern: {pat}"))?);
-        if !pat.contains("**") {
-            let nested = format!("**/{pat}");
-            builder.add(
-                Glob::new(&nested).with_context(|| format!("invalid exclude pattern: {nested}"))?,
-            );
-        }
+/// Build the path [`Filter`] from `--filter`/`--include`/`--exclude`/`--files-from`.
+fn build_filter(args: &Args) -> Result<Filter> {
+    let mut builder = FilterBuilder::default();
+    for rule in &args.filter {
+        builder.filter_rule(rule)?;
     }
-    builder.build().context("compiling exclude patterns")
+    for pat in &args.include {
+        builder.include(pat.clone());
+    }
+    for pat in &args.exclude {
+        builder.exclude(pat.clone());
+    }
+    if let Some(path) = &args.files_from {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading --files-from {}", path.display()))?;
+        let paths: Vec<PathBuf> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(PathBuf::from)
+            .collect();
+        builder.files_from(paths);
+    }
+    Ok(builder.build()?)
 }
 
 /// Whether either side of the transfer is a remote `[user@]host:path` spec.

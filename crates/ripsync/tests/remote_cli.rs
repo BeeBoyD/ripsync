@@ -7,7 +7,7 @@ use std::fs;
 use std::process::{Command, Stdio};
 
 use assert_cmd::cargo::CommandCargoExt;
-use globset::GlobSet;
+use ripsync_core::Filter;
 use ripsync_core::RunControl;
 use ripsync_core::net::proto::{NetOptions, Role};
 use ripsync_core::net::run_initiator;
@@ -39,7 +39,7 @@ fn server_binary_push_over_pipes() {
     let mut conn = IoDuplex::new(stdout, stdin);
 
     let ctrl = RunControl::default();
-    let excludes = GlobSet::empty();
+    let excludes = Filter::none();
     let options = NetOptions {
         preserve_mtime: true,
         ..NetOptions::default()

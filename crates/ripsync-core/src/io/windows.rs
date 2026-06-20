@@ -213,7 +213,10 @@ fn buffered_copy(src: &Path, dst: &Path) -> io::Result<u64> {
     let mut r = BufReader::with_capacity(BUF, reader);
     let mut w = BufWriter::with_capacity(BUF, writer);
     let n = io::copy(&mut r, &mut w)?;
-    w.into_inner()?.sync_all().ok();
+    // Flush to the OS only; per-file durability is the caller's job (see the
+    // matching note in `copy::buffered_copy`). `finalize_file` fsyncs in
+    // `FsyncMode::Always`; `Auto`/`Never` deliberately skip per-file fsync.
+    w.into_inner()?;
     Ok(n)
 }
 

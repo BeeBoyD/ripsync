@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
-/// ripsync — a fast, memory-safe rsync alternative (local sync milestone).
+/// ripsync — a fast, memory-safe rsync alternative for local and remote sync.
 #[derive(Debug, Clone, Parser)]
 #[command(name = "ripsync", version, about, long_about = None)]
 pub struct Args {
@@ -82,17 +82,47 @@ pub struct Args {
     #[arg(long)]
     pub group: bool,
 
-    /// Exclude paths matching this glob (repeatable).
+    /// Exclude paths matching this glob (repeatable). Also excludes everything
+    /// beneath a matching directory.
     #[arg(long, value_name = "PAT")]
     pub exclude: Vec<String>,
 
-    /// Unsupported placeholder; exits with an explicit error.
+    /// Include paths matching this glob (repeatable). Checked before `--exclude`,
+    /// so `--include '*.rs' --exclude '*'` keeps only Rust files.
+    #[arg(long, value_name = "PAT")]
+    pub include: Vec<String>,
+
+    /// Ordered filter rule, highest priority: `"+ PAT"` keeps, `"- PAT"` drops
+    /// (repeatable). Evaluated before `--include`/`--exclude`.
+    #[arg(long, value_name = "RULE", allow_hyphen_values = true)]
+    pub filter: Vec<String>,
+
+    /// Read the set of paths to transfer (relative to SRC, one per line; blank
+    /// lines and `#` comments ignored) from FILE.
+    #[arg(long, value_name = "FILE")]
+    pub files_from: Option<PathBuf>,
+
+    /// Throttle the remote upload rate (like rsync's `--bwlimit`). A bare number
+    /// is KiB/s; `K`/`M`/`G` suffixes set the unit. No effect on local copies.
     #[arg(long, value_name = "RATE")]
     pub bwlimit: Option<String>,
 
-    /// Unsupported placeholder; exits with an explicit error.
+    /// Keep partially transferred files (accepted for rsync compatibility).
+    /// Writes are always atomic via a temp file and rename; resume-from-partial
+    /// is not yet implemented.
     #[arg(long)]
     pub partial: bool,
+
+    /// Watch SRC and re-sync on every change (local transfers only). Runs the
+    /// fast incremental sync after each debounced batch of filesystem events;
+    /// press Ctrl-C to stop.
+    #[arg(long)]
+    pub watch: bool,
+
+    /// Debounce window in milliseconds for `--watch`: events are coalesced for
+    /// this long before a sync runs.
+    #[arg(long, value_name = "MS", default_value_t = 300)]
+    pub debounce: u64,
 
     /// Plain line output instead of the TUI.
     #[arg(long)]

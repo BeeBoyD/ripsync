@@ -8,9 +8,8 @@
 use std::io::{Read, Write};
 use std::path::Path;
 
-use globset::GlobSet;
-
 use crate::delta::encode_with_signature;
+use crate::filter::Filter;
 use crate::net::proto::{Data, Msg, NetEntry, NetKind, NetOptions, Request};
 use crate::net::transport::{recv_msg, send_msg};
 use crate::report::Stats;
@@ -41,12 +40,12 @@ fn whole_data(raw: Vec<u8>, options: NetOptions) -> Data {
 pub fn run_sender<C: Read + Write>(
     conn: &mut C,
     root: &Path,
-    excludes: &GlobSet,
+    filter: &Filter,
     options: NetOptions,
     threads: usize,
     control: &RunControl,
 ) -> Result<Stats> {
-    let entries = walk_controlled(root, threads, excludes, control)?;
+    let entries = walk_controlled(root, threads, filter, control)?;
 
     for entry in &entries {
         control.checkpoint()?;

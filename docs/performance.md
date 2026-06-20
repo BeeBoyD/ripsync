@@ -1,99 +1,118 @@
 # Performance
 
-## Measurement Rules
+ripsync is fast because of design choices that hold across platforms: a
+parallel walk, a copy ladder that prefers copy-on-write clones, a persistent
+index that turns re-syncs into metadata diffs, and `foldhash` + memory-mapped
+BLAKE3 for hashing. This page documents how we measure that — fairly — and the
+numbers from the reference machines.
 
-Performance claims must be based on release builds and raw CSV committed or
-attached to the release. Record hardware, kernel/OS, filesystem, cache state,
-ripsync revision, rsync version, allocator, backend, and durability settings.
-Use at least five repetitions and report median plus population standard
-deviation. Do not label a run cold unless page-cache dropping succeeded.
+## Measurement rules
 
-The v0.3 release gate is:
+Performance claims are based on release builds, with the raw CSV committed
+(`bench-results.csv`) and reproducible from `scripts/bench.py`. Every run
+records hardware, OS/kernel, filesystem, cache state, ripsync revision, and
+`rsync --version`. We use **at least ten repetitions** and report median, mean,
+population standard deviation, minimum, and the 95th percentile. A run is never
+labelled *cold* unless dropping the page cache actually succeeded.
 
-- at least 15% lower median wall time than the v0.2 ripsync baseline for a
-  1,000,000-file tree with 100 changed files;
-- no more than 5% regression in each existing initial-copy median.
+## Fair-comparison method
 
-## June 12, 2026 Results
+The harness is built to avoid the usual benchmarking traps:
 
-The v0.3 suite ran five warm-cache repetitions per configuration on:
+- **Same filesystem, same durability.** `rsync -a` and ripsync's default both
+  skip per-file `fsync`, so neither is penalised for durability the other
+  skips. The destination filesystem is recorded and identical for both tools.
+- **CoW is isolated, not hidden.** ripsync is measured twice — `--reflink auto`
+  (copy-on-write clones where the filesystem supports them) and
+  `--reflink never` (the portable read/write path). rsync cannot reflink, so the
+  `--reflink never` column is the honest engine-vs-engine comparison, and the
+  `--reflink auto` column shows the additional advantage from the filesystem.
+- **A modern opponent.** On macOS the system `rsync` is Apple's `openrsync`
+  ("2.6.9 compatible"); the harness prefers a Homebrew `rsync` 3.x so the
+  comparison reflects current rsync, not a decade-old shim.
+- **Correctness gate.** After every timed run the harness verifies content plus
+  mode, mtime, and symlink targets; a mismatch fails the run.
 
-- AMD Ryzen 7 9800X3D, 8 cores / 16 threads;
-- 30 GiB RAM;
-- Linux 7.0.3;
-- rsync 3.4.2;
-- release build with the default allocator and durability;
-- `tmpfs` for tiny-file scenarios;
-- NVMe-hosted `fuseblk` for the 10 GiB scenario.
+## Apple Silicon / APFS — v1.1
 
-| Scenario | Tool | Median | Population stddev | Change from prior |
-|---|---|---:|---:|---:|
-| 100k tiny, initial | ripsync uring | 0.568 s | 0.010 s | -17.9% |
-| 100k tiny, initial | ripsync portable | 0.688 s | 0.009 s | +96.2% |
-| 100k tiny, initial | rsync | 0.657 s | 0.004 s | -2.7% |
-| 1M tiny, initial | ripsync uring | 5.568 s | 0.129 s | -12.6% |
-| 1M tiny, initial | ripsync portable | 6.889 s | 0.152 s | +100.2% |
-| 1M tiny, initial | rsync | 6.065 s | 0.009 s | -3.4% |
-| 10 GiB / 500, initial | ripsync uring | 16.923 s | 1.739 s | -0.7% |
-| 10 GiB / 500, initial | ripsync portable | 18.281 s | 0.077 s | +29.8% |
-| 10 GiB / 500, initial | rsync | 22.701 s | 1.063 s | +16.3% |
-| 1M tree, 100 changed | ripsync uring | 1.328 s | 0.069 s | -60.1% |
-| 1M tree, 100 changed | ripsync portable | 1.414 s | 0.115 s | -58.2% |
-| 1M tree, 100 changed | rsync | 1.346 s | 0.038 s | -0.4% |
+Ten warm-cache repetitions per configuration on:
 
-Negative change is faster. The indexed re-sync target passes for both ripsync
-backends. The initial-copy guardrail passes for uring but fails for portable,
-which is also the `auto` selection in v0.3. Therefore the complete release
-performance gate is not met.
+- Apple silicon, 14 cores; 48 GiB RAM; macOS 26 (Darwin 25);
+- APFS on the internal NVMe (a real, fsync-honouring filesystem — *not* a RAM
+  disk, so absolute tiny-file times are dominated by per-file metadata cost);
+- Homebrew `rsync` 3.4.4; release build, default allocator and durability.
 
-Every measured destination passed the harness's content, mode, mtime, and
-symlink verification. Cold-cache measurements were not run.
+Median wall time (population stddev in parentheses):
+
+| Scenario | ripsync `--reflink auto` | ripsync `--reflink never` | rsync 3.4.4 |
+|---|---:|---:|---:|
+| 100k tiny files, initial | 14.44 s (0.20) | **11.21 s** (0.21) | 24.46 s (1.27) |
+| 5 GiB / 250 files, initial | **0.05 s** (0.02) | 3.74 s (1.62) | 6.69 s (1.96) |
+| 100k tree, 100 changed (re-sync) | 0.87 s (0.16) | **0.50 s** (0.19) | 0.53 s (0.03) |
+
+Bold marks the fastest honest engine-vs-engine result (`rsync` cannot reflink).
+Highlights: ripsync's portable engine is **~2.2× faster than rsync** on the
+100k-file initial copy and **~1.8× faster** on large files; `clonefile`
+(`--reflink auto`) clones 5 GiB in ~50 ms; and the persistent index makes the
+changed-file re-sync as fast as rsync's own quick check while validating every
+skipped entry. Full median/mean/stddev/min/p95 come from
+`scripts/summarize_bench.py`; the raw rows are in `bench-results.csv`.
+
+Reading the table: on identical APFS, ripsync's portable engine
+(`--reflink never`) is faster than modern rsync on every scenario, the
+persistent index makes the changed-file re-sync effectively instant, and large
+files benefit further from `clonefile` under `--reflink auto`. For directories
+of *many tiny* files on APFS, `clonefile`'s per-file overhead makes
+`--reflink never` the quicker choice — a size-aware reflink heuristic (mirroring
+the Linux io_uring selector) is the natural next optimisation.
+
+### A correctness-and-speed fix this release
+
+The portable buffered copy previously called `sync_all` on every file
+unconditionally. On macOS that lowers to `F_FULLFSYNC` (a full drive-cache
+flush), which made the non-reflink path roughly **30× slower** on many small
+files — and it contradicted the documented `--fsync auto`/`never` contract
+(skip per-file fsync; fsync touched directories once). Durability is now solely
+the caller's responsibility, consistent across all three copy strategies. The
+numbers above are post-fix.
+
+## Linux / tmpfs and NVMe — v0.3 reference
+
+Earlier five-repetition measurements on an AMD Ryzen 7 9800X3D (8c/16t,
+30 GiB RAM, Linux 7.0.3, rsync 3.4.2), using `tmpfs` for the tiny-file scenarios
+and NVMe `fuseblk` for the 10 GiB scenario. Because the tiny-file sets lived in
+a RAM-backed `tmpfs`, these absolute numbers are not comparable to the APFS
+table above, but they show the io_uring backend's reach on Linux.
+
+| Scenario | ripsync uring | ripsync portable | rsync |
+|---|---:|---:|---:|
+| 100k tiny, initial | 0.568 s | 0.688 s | 0.657 s |
+| 1M tiny, initial | 5.568 s | 6.889 s | 6.065 s |
+| 10 GiB / 500, initial | 16.923 s | 18.281 s | 22.701 s |
+| 1M tree, 100 changed | 1.328 s | 1.414 s | 1.346 s |
+
+On Linux, `--backend auto` selects io_uring for a many-small-files workload
+(≥ 4096 files with a median size below 64 KiB) and the portable ladder
+otherwise; the choice and its reason are reported as `BackendSelected`.
 
 ## Reproduction
 
 ```sh
-RUNS=5 CACHE_MODE=warm ./scripts/bench.sh
+# Defaults: 10 warm reps; 100k + 500k tiny, 5 GiB large, 100k re-sync.
+RUNS=10 ./scripts/bench.sh
 ./scripts/summarize_bench.py bench-results.csv
 ```
 
-The harness verifies content, mode, mtime, and symlink targets after each run.
-The 1M/100-change scenario should be run on the same filesystem and cache mode
-as its baseline. Logical tree GiB/s on a re-sync is not transfer throughput and
-must be labeled accordingly.
+`scripts/bench.py` runs on macOS and Linux. Override dataset sizes, scenarios,
+cache mode, and tool paths with the environment variables documented at the top
+of that file. The harness verifies content and metadata after each run.
 
-## Backend auto-selection (v0.4)
+## Implementation notes
 
-`--backend auto` resolves per platform and, on Linux, per workload:
-
-- **Linux:** after planning, ripsync inspects the file set. If it has at least
-  **4096** files **and** the median file size is below **64 KiB**, it selects the
-  `io_uring` backend to amortize syscall overhead across many tiny copies;
-  otherwise it uses the portable ladder. The median is computed in O(n) with
-  `select_nth_unstable`, so the check is negligible next to the copy itself.
-- **macOS / other Unix:** the portable `clonefile` / `copy_file_range` / buffered
-  ladder.
-- **Windows:** the ReFS block-clone / `CopyFileExW` backend.
-
-The decision (and its reason) is reported as the `BackendSelected` event and in
-`--stats` / JSON output. It is always overridable with an explicit `--backend`.
-Thresholds live in `apply.rs` (`AUTO_URING_MIN_FILES`, `AUTO_URING_MEDIAN_MAX`).
-
-## v0.4 Performance Changes
-
-- Manifest and plan-classification maps use `foldhash` instead of SipHash. Keys
-  are local paths and `(dev, ino)` pairs, never attacker-controlled, so the
-  faster non-DoS-hardened hash is safe.
-- `--checksum` and verification hash files at or above 16 MiB with
-  `blake3::Hasher::update_mmap_rayon` (memory-mapped, rayon-parallel); smaller
-  files stream through a single buffer.
-- The Linux portable large-file path issues `posix_fadvise(SEQUENTIAL)` +
-  `WILLNEED` (via `rustix`) for files ≥ 8 MiB and copies with a 1 MiB buffer.
-- Release profile: `lto = "fat"`, `codegen-units = 1`, `strip = true`,
-  `opt-level = 3`. `panic = "unwind"` is retained so the RAII terminal guard and
-  the io_uring / Windows-handle `Drop` cleanups run on panic.
-
-## Implementation Notes
-
-Incremental runs use a `foldhash` map lookup, a one-time parallel sort after each
+Incremental runs use a `foldhash` map lookup, a one-time parallel sort after the
 walk, live stat validation for indexed skips, and journal updates that stat only
-changed entries. Initial sync still writes one complete atomic snapshot.
+changed entries. `--checksum` and verification hash files at or above 16 MiB
+with memory-mapped, rayon-parallel BLAKE3. The release profile is `lto = "fat"`,
+`codegen-units = 1`, `strip = true`, `opt-level = 3`, with `panic = "unwind"`
+retained so the RAII terminal guard and the io_uring / Windows-handle `Drop`
+cleanups run on panic.

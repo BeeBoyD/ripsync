@@ -11,7 +11,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use globset::GlobSet;
+use ripsync_core::Filter;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -274,7 +274,7 @@ struct Ui {
 }
 
 /// Open the TUI before planning and execute the complete run lifecycle.
-pub fn run(args: &Args, threads: usize, excludes: &GlobSet) -> Result<()> {
+pub fn run(args: &Args, threads: usize, filter: &Filter) -> Result<()> {
     let state = Arc::new(Mutex::new(TuiState::default()));
     let control = RunControl::default();
     let approval = Approval::new();
@@ -282,7 +282,7 @@ pub fn run(args: &Args, threads: usize, excludes: &GlobSet) -> Result<()> {
     spawn_worker(
         args.clone(),
         threads,
-        excludes.clone(),
+        filter.clone(),
         Arc::clone(&state),
         control.clone(),
         approval.clone(),
@@ -332,7 +332,7 @@ pub fn run(args: &Args, threads: usize, excludes: &GlobSet) -> Result<()> {
 fn spawn_worker(
     args: Args,
     threads: usize,
-    excludes: GlobSet,
+    filter: Filter,
     state: Arc<Mutex<TuiState>>,
     control: RunControl,
     approval: Approval,
@@ -343,7 +343,7 @@ fn spawn_worker(
             state: Arc::clone(&state),
         };
         let outcome = run_worker(
-            &args, threads, &excludes, &state, &control, &approval, &reporter,
+            &args, threads, &filter, &state, &control, &approval, &reporter,
         );
         let status = match outcome {
             Ok(()) => RunStatus::Success,
@@ -358,7 +358,7 @@ fn spawn_worker(
 fn run_worker<R: Reporter>(
     args: &Args,
     threads: usize,
-    excludes: &GlobSet,
+    filter: &Filter,
     state: &Arc<Mutex<TuiState>>,
     control: &RunControl,
     approval: &Approval,
@@ -374,7 +374,7 @@ fn run_worker<R: Reporter>(
             index: args.index,
             hard_links: args.hard_links,
         },
-        excludes,
+        filter,
         control,
         reporter,
     )?;

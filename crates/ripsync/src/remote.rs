@@ -12,8 +12,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use globset::GlobSet;
 
+use ripsync_core::Filter;
 use ripsync_core::RunControl;
 use ripsync_core::net::proto::{NetOptions, Role};
 use ripsync_core::net::transport::IoDuplex;
@@ -99,7 +99,7 @@ pub fn run_server() -> Result<()> {
 pub fn run_remote(
     args: &Args,
     threads: usize,
-    excludes: &GlobSet,
+    filter: &Filter,
     src: &Location,
     dst: &Location,
 ) -> Result<()> {
@@ -162,7 +162,7 @@ pub fn run_remote(
             &local_root,
             &remote_root,
             options,
-            excludes,
+            filter,
             threads,
             &control,
             &reporter,
@@ -175,7 +175,7 @@ pub fn run_remote(
             &local_root,
             &remote_root,
             options,
-            excludes,
+            filter,
             threads,
             &control,
             &reporter,

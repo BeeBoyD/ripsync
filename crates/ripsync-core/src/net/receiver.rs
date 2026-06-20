@@ -11,9 +11,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use filetime::FileTime;
-use globset::GlobSet;
 
 use crate::delta::{Signature, apply};
+use crate::filter::Filter;
 use crate::meta::{
     canonical_root, check_relative, contained_target, set_mode, set_mtime, set_symlink_mtime,
 };
@@ -33,7 +33,7 @@ use crate::{Error, Result, RunControl};
 pub fn run_receiver<C: Read + Write, R: Reporter>(
     conn: &mut C,
     root: &Path,
-    excludes: &GlobSet,
+    filter: &Filter,
     options: NetOptions,
     threads: usize,
     control: &RunControl,
@@ -59,7 +59,7 @@ pub fn run_receiver<C: Read + Write, R: Reporter>(
     }
 
     // 2. Walk our own tree once for skip and delete decisions.
-    let existing = walk_controlled(root, threads, excludes, control)?;
+    let existing = walk_controlled(root, threads, filter, control)?;
     let existing_map: HashMap<PathBuf, Entry> = existing
         .iter()
         .map(|e| (e.rel.clone(), e.clone()))

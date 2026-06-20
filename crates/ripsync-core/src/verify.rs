@@ -4,8 +4,6 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use globset::GlobSetBuilder;
-
 use crate::apply::MetadataOptions;
 use crate::control::RunControl;
 use crate::index::RIPSYNC_DIR;
@@ -226,16 +224,14 @@ pub fn verify<R: Reporter>(
     }
     reporter.event(Event::Phase(RunPhase::Verifying));
     control.checkpoint()?;
-    let excludes = GlobSetBuilder::new()
-        .build()
-        .map_err(|error| Error::Pattern(error.to_string()))?;
+    let filter = crate::filter::Filter::none();
     let source_entries = if mode == VerifyMode::All {
-        walk_controlled(src, threads, &excludes, control)?
+        walk_controlled(src, threads, &filter, control)?
     } else {
         Vec::new()
     };
     let mut destination_entries = if mode == VerifyMode::All {
-        walk_controlled(dst, threads, &excludes, control)?
+        walk_controlled(dst, threads, &filter, control)?
     } else {
         plan.actions
             .iter()

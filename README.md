@@ -14,8 +14,11 @@ with copy-on-write backends per platform (Linux io_uring/reflink, Windows ReFS,
 macOS clonefile), a persistent index for quick re-syncs, an operator TUI,
 optional post-copy verification, and **remote sync over SSH** with delta transfer
 and zstd compression. Device-tier auto-tuning adapts thread count and buffers to
-the machine, from a 2-core NAS to a many-core workstation. Watch mode is not yet
-implemented.
+the machine, from a 2-core NAS to a many-core workstation. `--watch` keeps a
+destination continuously mirrored, and rsync-style filters (`--include`,
+`--filter`, `--files-from`) select exactly what to transfer. For cloud object
+storage (S3 and compatible) see the sibling tool
+[ripclone](https://github.com/beeboyd/ripclone).
 
 The full documentation is an [mdBook](docs/SUMMARY.md) (deployed to GitHub
 Pages); see the [installation matrix](docs/install.md) for every install method.
@@ -48,7 +51,18 @@ ripsync SOURCE DESTINATION --verify changed
 
 # Compare complete trees after copying
 ripsync SOURCE DESTINATION --verify all
+
+# Transfer only Rust files
+ripsync SOURCE DESTINATION --include '*.rs' --exclude '*'
+
+# Transfer exactly the paths in a list
+ripsync SOURCE DESTINATION --files-from changed.txt
+
+# Keep the destination continuously mirrored
+ripsync SOURCE DESTINATION --watch
 ```
+
+See [docs/filters.md](docs/filters.md) and [docs/watch.md](docs/watch.md).
 
 The TUI starts automatically for interactive human output. Use `--no-tui`,
 `--output json`, or `--quiet` for noninteractive operation.
@@ -118,6 +132,9 @@ See [docs/tui.md](docs/tui.md).
 |---|---|
 | `--verify none|changed|all` | Post-copy verification; default `none` |
 | `--delete` / `--yes` | Mirror destination-only entries / approve automation |
+| `--exclude`, `--include`, `--filter` | Glob/ordered filters; `--filter` takes `"+ PAT"`/`"- PAT"` |
+| `--files-from FILE` | Transfer exactly the source-relative paths listed in `FILE` |
+| `--watch` / `--debounce MS` | Re-sync on change (local); coalesce events (default 300 ms) |
 | `--checksum` | Classify files using BLAKE3 |
 | `--backend auto|portable|uring` | `auto` is portable-first; uring is explicit |
 | `--no-index` | Disable the persistent v3 destination index |
@@ -137,26 +154,23 @@ always atomic regardless.
 
 ## Performance
 
-Warm-cache measurements on an AMD Ryzen 7 9800X3D with 30 GiB RAM, Linux 7.0.3,
-and rsync 3.4.2. Tiny-file runs used `tmpfs`; the 10 GiB run used `fuseblk`.
+Median wall time, 10 warm-cache repetitions on Apple silicon (14 cores, 48 GiB),
+macOS 26, APFS, against Homebrew rsync 3.4.4. ripsync is measured both with
+copy-on-write clones (`--reflink auto`) and without (`--reflink never`); rsync
+cannot reflink, so the `never` column is the honest engine-vs-engine result.
 
-| Scenario | ripsync uring median | ripsync portable median | rsync median |
+| Scenario | ripsync `--reflink auto` | ripsync `--reflink never` | rsync 3.4.4 |
 |---|---:|---:|---:|
-| 100k tiny, initial | 0.591 s | 0.717 s | 0.658 s |
-| 1M tiny, initial | 5.568 s | 6.889 s | 6.065 s |
-| 10 GiB / 500 files, initial | 16.923 s | 18.281 s | 22.701 s |
-| 1M tree, 100 changed | 1.328 s | 1.414 s | 1.346 s |
+| 100k tiny files, initial | 14.44 s | **11.21 s** | 24.46 s |
+| 5 GiB / 250 files, initial | **0.05 s** | 3.74 s | 6.69 s |
+| 100k tree, 100 changed (re-sync) | 0.87 s | **0.50 s** | 0.53 s |
 
-The 100k row was re-measured for v0.4 (3 warm runs) after the `foldhash`,
-`blake3` mmap, `fadvise`, and `lto = "fat"` changes and is within run-to-run
-variance of the v0.3 baseline (0.568 / 0.688 s) — no regression. The 1M and
-10 GiB rows carry over from the v0.3 measurement; those constant factors are
-unchanged by the v0.4 work, and the full-scale suite is the release-gate
-measurement (run it on a host with adequate scratch space).
-
-Raw rows are in [bench-results.csv](bench-results.csv). Run
-`scripts/summarize_bench.py bench-results.csv` for medians and population
-standard deviation. See [docs/performance.md](docs/performance.md).
+ripsync's portable engine is ~2.2× faster than modern rsync on the tiny-file
+copy and ~1.8× on large files; `clonefile` clones 5 GiB in ~50 ms; and the
+persistent index keeps re-syncs as fast as rsync's quick check. The
+[methodology, fairness rules, and Linux io_uring numbers](docs/performance.md)
+are documented in full. Raw rows are in [bench-results.csv](bench-results.csv);
+run `scripts/summarize_bench.py bench-results.csv` for median/mean/stddev/min/p95.
 
 ## Documentation
 
