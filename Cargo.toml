@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/ripsync-core", "crates/ripsync", "xtask"]
 
 [workspace.package]
-version = "0.4.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["ripsync contributors"]
@@ -41,6 +41,7 @@ reflink-copy = "0.1"
 foldhash = "0.1"
 rustix = { version = "1", features = ["fs", "process"] }
 bincode = "1"
+zstd = "0.13"
 xattr = "1"
 mimalloc = "0.1"
 io-uring = "0.6"
@@ -80,6 +81,7 @@ targets = [
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
 ]
 # Attach the generated man page + shell completions to every release archive.
 include = ["dist/assets"]

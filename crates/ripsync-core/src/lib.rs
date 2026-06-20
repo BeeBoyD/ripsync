@@ -28,8 +28,10 @@ pub mod error;
 pub mod index;
 pub mod io;
 pub mod meta;
+pub mod net;
 pub mod plan;
 pub mod report;
+pub mod tune;
 pub mod verify;
 pub mod walk;
 

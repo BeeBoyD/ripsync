@@ -204,17 +204,37 @@ fn json_output_is_valid() {
 }
 
 #[test]
-fn unsupported_placeholder_flags_fail_immediately() {
+fn bwlimit_and_partial_are_accepted() {
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    write(&src.join("f"), "hi");
+
+    // `--partial` is accepted; a local sync still succeeds (writes are atomic).
     ripsync()
-        .args(["src", "dst", "--bwlimit", "1M"])
+        .args([
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "--no-tui",
+            "--partial",
+        ])
         .assert()
-        .failure()
-        .stderr(predicates::str::contains("--bwlimit is not supported"));
+        .success();
+
+    // `--bwlimit` only affects remote transfers; on a local copy it warns and
+    // proceeds rather than failing.
+    let dst2 = tmp.path().join("dst2");
     ripsync()
-        .args(["src", "dst", "--partial"])
+        .args([
+            src.to_str().unwrap(),
+            dst2.to_str().unwrap(),
+            "--no-tui",
+            "--bwlimit",
+            "1M",
+        ])
         .assert()
-        .failure()
-        .stderr(predicates::str::contains("--partial is not supported"));
+        .success()
+        .stderr(predicates::str::contains("no effect on local copies"));
 }
 
 #[test]

@@ -30,7 +30,7 @@ Two packages are provided:
    git clone ssh://aur@aur.archlinux.org/ripsync.git aur-ripsync
    cp PKGBUILD .SRCINFO aur-ripsync/
    cd aur-ripsync && git add PKGBUILD .SRCINFO
-   git commit -m "ripsync 0.4.0" && git push
+   git commit -m "ripsync 1.0.0" && git push
    ```
 
 `$pkgver` tracks the git tag; `ripsync-bin` consumes the cargo-dist

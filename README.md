@@ -9,10 +9,12 @@
 
 ![ripsync TUI demo](docs/assets/ripsync-demo.gif)
 
-ripsync is a fast, memory-safe local directory synchronization tool written in
-Rust, with copy-on-write backends per platform (Linux io_uring/reflink, Windows
-ReFS, macOS clonefile), a persistent index for quick re-syncs, an operator TUI,
-and optional post-copy verification. Remote sync and watch mode are not
+ripsync is a fast, memory-safe directory synchronization tool written in Rust,
+with copy-on-write backends per platform (Linux io_uring/reflink, Windows ReFS,
+macOS clonefile), a persistent index for quick re-syncs, an operator TUI,
+optional post-copy verification, and **remote sync over SSH** with delta transfer
+and zstd compression. Device-tier auto-tuning adapts thread count and buffers to
+the machine, from a 2-core NAS to a many-core workstation. Watch mode is not yet
 implemented.
 
 The full documentation is an [mdBook](docs/SUMMARY.md) (deployed to GitHub
@@ -50,6 +52,32 @@ ripsync SOURCE DESTINATION --verify all
 
 The TUI starts automatically for interactive human output. Use `--no-tui`,
 `--output json`, or `--quiet` for noninteractive operation.
+
+## Remote Sync (SSH)
+
+Give a source or destination as `[user@]host:path` and ripsync transfers over
+ssh, rsync-style — the local side runs `ssh host ripsync --server` and the two
+ripsync peers speak a versioned binary protocol over the pipe. ripsync must be
+installed on both ends; your existing ssh keys, agent, `~/.ssh/config`, and
+`known_hosts` are all reused.
+
+```sh
+# Push a local tree to a remote host
+ripsync ./site/ user@web01:/var/www/site
+
+# Pull from a remote host
+ripsync user@web01:/var/www/site ./backup
+
+# Delta + zstd compression over a slow link, capped at 2 MiB/s
+ripsync ./data backup@nas:/pool/data -z --bwlimit 2M
+
+# Custom ssh command (e.g. a non-default port)
+ripsync ./data host:/srv -e "ssh -p 2222"
+```
+
+Changed files transfer as rolling-checksum deltas; `--whole-file`/`-W` forces a
+full copy. See [docs/remote.md](docs/remote.md) for the protocol and security
+model.
 
 ## Safety Model
 
@@ -97,9 +125,15 @@ See [docs/tui.md](docs/tui.md).
 | `--xattrs`, `--acls` | Preserve extended attributes or POSIX ACLs |
 | `--owner`, `--group` | Preserve numeric uid or gid |
 | `--output json` | Emit an additive machine-readable final report |
+| `--profile auto\|low\|balanced\|high` | Device performance tier; `auto` detects from CPU/RAM |
+| `-z`, `--compress` / `--compress-level N` | zstd-compress remote whole-file payloads |
+| `--bwlimit RATE` | Throttle remote upload rate (bare = KiB/s; `K`/`M`/`G` suffixes) |
+| `-e`, `--rsh CMD` | Remote shell for `host:path` transfers (default `ssh`) |
+| `-W`, `--whole-file` | Transfer whole files instead of deltas (remote) |
 
-`--bwlimit` and `--partial` are recognized placeholders but fail immediately
-because throttling and partial resume are not implemented.
+`--bwlimit` applies to remote transfers (it is a no-op for local copies).
+`--partial` is accepted but resume-from-partial is not yet implemented; writes are
+always atomic regardless.
 
 ## Performance
 

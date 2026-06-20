@@ -42,8 +42,8 @@ publish jobs.
 2. Commit, then tag and push:
 
    ```sh
-   git tag v0.4.0
-   git push origin v0.4.0
+   git tag v1.0.0
+   git push origin v1.0.0
    ```
 
 3. The tag triggers `release.yml`: it builds every target, generates the man

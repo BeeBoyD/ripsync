@@ -27,6 +27,7 @@ num_cpus.workspace = true
 reflink-copy.workspace = true
 foldhash.workspace = true
 bincode.workspace = true
+zstd.workspace = true
 
 [features]
 default = ["io-uring"]
@@ -47,6 +48,8 @@ windows-sys.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 criterion.workspace = true
+bincode.workspace = true
+globset.workspace = true
 
 [[bench]]
 name = "delta_bench"
