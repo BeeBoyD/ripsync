@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.0.0 - 2026-06-20
+
+### Added
+
+- **Remote sync over SSH.** `ripsync [user@]host:path …` transfers to or from a
+  remote host, rsync-style: the local side spawns `ssh host ripsync --server` and
+  the two ripsync peers speak a versioned binary protocol over the ssh pipe
+  (reusing your keys, agent, `~/.ssh/config`, and `known_hosts`). Push and pull
+  are both supported; the receiver drives a deadlock-free lock-step exchange and
+  every write is containment-checked under the destination root. New `net` module
+  (`proto`, `transport`, `sender`, `receiver`, `server`) and a hidden
+  `ripsync --server` peer mode.
+- **Delta over the wire.** The rolling-checksum delta engine was split into a
+  serializable `Signature` (computed by the receiver) and `encode_with_signature`
+  (run by the sender), so changed files transfer as deltas instead of whole
+  copies. `--whole-file`/`-W` forces whole-file transfer.
+- **Wire compression.** `--compress`/`-z` (with `--compress-level`) zstd-compresses
+  whole-file payloads.
+- **Bandwidth limiting.** `--bwlimit RATE` token-bucket-throttles the upload rate
+  (bare number = KiB/s, with `K`/`M`/`G` suffixes), like rsync.
+- **Device-tier auto-tuning.** New `tune` module classifies the machine (CPU
+  count + RAM) into a `low`/`balanced`/`high` profile that drives worker-thread
+  count, copy-buffer size, io_uring queue depth, and zstd level. Select with
+  `--profile {auto,low,balanced,high}`; the active profile shows in the TUI header.
+- **ARM64 Windows** (`aarch64-pc-windows-msvc`) added to the release matrix, built
+  with the system allocator.
+
+### Changed
+
+- `--bwlimit` and `--partial` are no longer hard errors; `--bwlimit` throttles
+  remote transfers and `--partial` is accepted (writes are always atomic).
+- The TUI header now reports the active performance profile and the real version.
+
 ## 0.4.0 - 2026-06-12
 
 ### Added

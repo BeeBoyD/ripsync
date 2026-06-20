@@ -34,6 +34,11 @@ jobs:
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+          # ARM64 Windows: cross-compiled from the x64 runner. Use the system
+          # allocator to avoid cross-building mimalloc's C sources for arm64.
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            cargo_flags: --no-default-features --features system-malloc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +56,7 @@ jobs:
           printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\n' >> .cargo/config.toml
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} -p ripsync
+        run: cargo build --release --target ${{ matrix.target }} -p ripsync ${{ matrix.cargo_flags }}
 
       - name: Generate man page + completions
         run: cargo run --release -p xtask -- dist-assets

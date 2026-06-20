@@ -554,10 +554,11 @@ fn draw(
         .split(area);
     let color = |wanted| if no_color { Color::Reset } else { wanted };
     let options = format!(
-        "phase={} backend={} verify={:?} j={}{}{}",
+        "phase={} backend={} verify={:?} profile={} j={}{}{}",
         phase_word(state.phase),
         state.backend,
         args.verify,
+        args.resolve_profile().name(),
         threads,
         if args.delete { " delete" } else { "" },
         if args.dry_run { " dry-run" } else { "" }
@@ -569,7 +570,11 @@ fn draw(
             args.dst.display(),
             options
         ))
-        .block(Block::default().borders(Borders::ALL).title("ripsync 0.4")),
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(concat!("ripsync ", env!("CARGO_PKG_VERSION"))),
+        ),
         chunks[0],
     );
     let entry_ratio = ratio(state.files_done, state.total_files as u64);

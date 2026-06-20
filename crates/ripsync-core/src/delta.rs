@@ -83,51 +83,98 @@ pub fn block_size_for(old_len: usize) -> usize {
     approx.clamp(MIN_BLOCK, MAX_BLOCK)
 }
 
-/// Metadata for one block of `old`.
-struct BlockIndex {
-    /// Strong hash per block.
-    strong: Vec<StrongHash>,
-    /// Byte length per block (all `B` except possibly the last).
-    len: Vec<usize>,
-    /// weak checksum → indices of blocks with that weak checksum.
-    by_weak: HashMap<u32, Vec<u32>>,
+/// One block's fingerprint inside a [`Signature`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockSig {
+    /// Weak rolling checksum of the block.
+    pub weak: u32,
+    /// Strong hash (BLAKE3 prefix) of the block.
+    pub strong: StrongHash,
+    /// Block length in bytes (all `block_size` except possibly the last).
+    pub len: u32,
 }
 
-impl BlockIndex {
-    fn build(old: &[u8], block: usize) -> Self {
-        let mut strong = Vec::new();
-        let mut len = Vec::new();
-        let mut by_weak: HashMap<u32, Vec<u32>> = HashMap::new();
+/// A compact fingerprint of an `old` buffer: everything the delta encoder needs
+/// to find reusable blocks, and nothing else.
+///
+/// This is the wire-friendly half of the rsync split. The machine that holds the
+/// *old* file ("receiver") computes a [`Signature`] with [`Signature::compute`]
+/// and sends it across; the machine that holds the *new* file ("sender") feeds it
+/// to [`encode_with_signature`] to produce a [`Delta`] — without ever shipping the
+/// old bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Signature {
+    /// Block size the blocks were cut at.
+    pub block_size: u32,
+    /// Per-block fingerprints, in `old` order.
+    pub blocks: Vec<BlockSig>,
+}
+
+impl Signature {
+    /// Compute the signature of `old`.
+    ///
+    /// `block_override` forces a block size (must be ≥ 1); otherwise
+    /// [`block_size_for`] picks one from `old.len()`.
+    #[must_use]
+    pub fn compute(old: &[u8], block_override: Option<usize>) -> Self {
+        let block = block_override.map_or_else(|| block_size_for(old.len()), |b| b.max(1));
+        let block_size = u32::try_from(block).unwrap_or(u32::MAX);
+        let mut blocks = Vec::new();
         let mut start = 0;
-        let mut idx: u32 = 0;
         while start < old.len() {
             let end = (start + block).min(old.len());
             let chunk = &old[start..end];
-            let weak = RollingChecksum::new(chunk).value();
-            by_weak.entry(weak).or_default().push(idx);
-            strong.push(strong_hash(chunk));
-            len.push(chunk.len());
+            blocks.push(BlockSig {
+                weak: RollingChecksum::new(chunk).value(),
+                strong: strong_hash(chunk),
+                len: u32::try_from(chunk.len()).unwrap_or(u32::MAX),
+            });
             start = end;
-            idx += 1;
         }
-        Self {
-            strong,
-            len,
-            by_weak,
-        }
+        Self { block_size, blocks }
     }
 
-    /// Find a block matching `weak`, `want_len`, and the window contents.
+    /// Number of blocks in the signature.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.blocks.len()
+    }
+
+    /// Whether the signature is empty (the `old` buffer had no bytes).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+}
+
+/// Acceleration structure built from a [`Signature`] at encode time: weak
+/// checksum → indices of blocks sharing it.
+struct Lookup<'a> {
+    sig: &'a Signature,
+    by_weak: HashMap<u32, Vec<u32>>,
+}
+
+impl<'a> Lookup<'a> {
+    fn new(sig: &'a Signature) -> Self {
+        let mut by_weak: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (i, block) in sig.blocks.iter().enumerate() {
+            let idx = u32::try_from(i).unwrap_or(u32::MAX);
+            by_weak.entry(block.weak).or_default().push(idx);
+        }
+        Self { sig, by_weak }
+    }
+
+    /// Find a block matching `weak` and the window contents.
     fn find(&self, weak: u32, window: &[u8]) -> Option<u32> {
         let candidates = self.by_weak.get(&weak)?;
         let mut strong: Option<StrongHash> = None;
         for &bi in candidates {
-            let i = bi as usize;
-            if self.len[i] != window.len() {
+            let block = &self.sig.blocks[bi as usize];
+            if block.len as usize != window.len() {
                 continue;
             }
             let sh = *strong.get_or_insert_with(|| strong_hash(window));
-            if self.strong[i] == sh {
+            if block.strong == sh {
                 return Some(bi);
             }
         }
@@ -135,17 +182,17 @@ impl BlockIndex {
     }
 }
 
-/// Encode the difference from `old` to `new`.
+/// Encode `new` against a previously computed [`Signature`] of `old`.
 ///
-/// `block_override` forces a block size (must be ≥ 1); otherwise
-/// [`block_size_for`] picks one from `old.len()`.
+/// This is the half of the delta engine that runs on the machine holding `new`
+/// (the rsync "sender"): it needs only the signature, never `old` itself.
 #[must_use]
-pub fn encode(old: &[u8], new: &[u8], block_override: Option<usize>) -> Delta {
-    let block = block_override.map_or_else(|| block_size_for(old.len()), |b| b.max(1));
-    let block_size = u32::try_from(block).unwrap_or(u32::MAX);
+pub fn encode_with_signature(sig: &Signature, new: &[u8]) -> Delta {
+    let block = sig.block_size as usize;
+    let block_size = sig.block_size;
 
     // Degenerate: nothing to copy from.
-    if old.is_empty() {
+    if sig.blocks.is_empty() {
         let ops = if new.is_empty() {
             Vec::new()
         } else {
@@ -154,7 +201,7 @@ pub fn encode(old: &[u8], new: &[u8], block_override: Option<usize>) -> Delta {
         return Delta { block_size, ops };
     }
 
-    let index = BlockIndex::build(old, block);
+    let index = Lookup::new(sig);
     let mut ops: Vec<Op> = Vec::new();
     let n = new.len();
     let mut pos = 0usize; // window start
@@ -204,6 +251,16 @@ pub fn encode(old: &[u8], new: &[u8], block_override: Option<usize>) -> Delta {
     }
 
     Delta { block_size, ops }
+}
+
+/// Encode the difference from `old` to `new`.
+///
+/// Convenience wrapper for callers that hold both buffers locally: computes the
+/// signature of `old` and encodes `new` against it. `block_override` forces a
+/// block size (must be ≥ 1); otherwise [`block_size_for`] picks one.
+#[must_use]
+pub fn encode(old: &[u8], new: &[u8], block_override: Option<usize>) -> Delta {
+    encode_with_signature(&Signature::compute(old, block_override), new)
 }
 
 /// Reconstruct `new` by applying `delta` to `old`.

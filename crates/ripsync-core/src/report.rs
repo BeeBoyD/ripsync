@@ -139,7 +139,7 @@ pub enum Event {
 }
 
 /// Tally of everything a sync did.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Stats {
     /// Files/dirs/symlinks newly created.
     pub copied: u64,

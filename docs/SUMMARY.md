@@ -5,6 +5,7 @@
 - [Quick start](quick-start.md)
 - [Installation](install.md)
 - [Configuration](config.md)
+- [Remote sync (SSH)](remote.md)
 - [TUI workflow](tui.md)
 - [Safety model](safety.md)
 - [Verification](verification.md)

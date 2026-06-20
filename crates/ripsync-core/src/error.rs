@@ -42,6 +42,11 @@ pub enum Error {
     #[error("delta apply failed: {0}")]
     DeltaApply(String),
 
+    /// The remote-sync wire protocol was violated (bad frame, version mismatch,
+    /// unexpected message, oversized frame).
+    #[error("protocol error: {0}")]
+    Protocol(String),
+
     /// Verification found one or more mismatches.
     #[error("verification failed with {0} mismatch(es)")]
     Verification(usize),

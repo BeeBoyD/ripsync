@@ -5,6 +5,7 @@
 
 pub mod args;
 mod config;
+mod remote;
 mod reporter;
 mod tui;
 
@@ -97,6 +98,14 @@ fn run() -> Result<()> {
         return run_gen(&raw[2..]);
     }
 
+    // The far-end protocol peer is launched as `ripsync --server` with no
+    // positional paths, so it must be intercepted before clap's required-args
+    // parsing. It reads the role/root/options off the wire, not from argv.
+    if raw.iter().skip(1).any(|a| a == "--server") {
+        init_tracing(raw.iter().filter(|a| a.as_str() == "-v").count().min(255) as u8);
+        return remote::run_server();
+    }
+
     // Parse via matches so we can tell which flags were given on the command
     // line, then layer config-file defaults under them.
     let matches = Args::command().get_matches();
@@ -104,15 +113,22 @@ fn run() -> Result<()> {
     init_tracing(args.verbose);
     config::apply_defaults(&mut args, &matches);
 
-    if args.bwlimit.is_some() {
-        bail!("--bwlimit is not supported in ripsync 0.4");
-    }
-    if args.partial {
-        bail!("--partial is not supported in ripsync 0.4");
+    // `--bwlimit` throttles remote transfers (see remote::run_remote); it has no
+    // effect on local copies. `--partial` is accepted (writes always go to a temp
+    // file and atomically rename) but resume-from-partial is not yet implemented.
+    if args.bwlimit.is_some() && !is_remote_run(&args) {
+        tracing::warn!("--bwlimit has no effect on local copies; ignoring");
     }
 
     let threads = args.thread_count();
     let excludes = build_excludes(&args.exclude)?;
+
+    // Remote transfer: exactly one of src/dst is a `[user@]host:path` spec.
+    let src_loc = remote::parse_location(&args.src.to_string_lossy());
+    let dst_loc = remote::parse_location(&args.dst.to_string_lossy());
+    if src_loc.is_remote() || dst_loc.is_remote() {
+        return remote::run_remote(&args, threads, &excludes, &src_loc, &dst_loc);
+    }
 
     let use_tui = !args.no_tui
         && args.output == OutputFormat::Human
@@ -313,6 +329,12 @@ fn build_excludes(patterns: &[String]) -> Result<GlobSet> {
         }
     }
     builder.build().context("compiling exclude patterns")
+}
+
+/// Whether either side of the transfer is a remote `[user@]host:path` spec.
+fn is_remote_run(args: &Args) -> bool {
+    remote::parse_location(&args.src.to_string_lossy()).is_remote()
+        || remote::parse_location(&args.dst.to_string_lossy()).is_remote()
 }
 
 fn init_tracing(verbose: u8) {

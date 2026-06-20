@@ -102,9 +102,14 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
     pub output: OutputFormat,
 
-    /// Parallelism (worker threads). Defaults to the CPU count.
+    /// Parallelism (worker threads). Overrides the `--profile` thread count.
     #[arg(short = 'j', long, value_name = "N")]
     pub threads: Option<usize>,
+
+    /// Performance tier. `auto` detects from CPU count and RAM; `low` conserves
+    /// resources on small devices, `high` uses a workstation fully.
+    #[arg(long, value_enum, default_value_t = ProfileArg::Auto)]
+    pub profile: ProfileArg,
 
     /// Increase verbosity (repeatable).
     #[arg(short = 'v', long, action = clap::ArgAction::Count)]
@@ -118,6 +123,42 @@ pub struct Args {
     /// non-TUI runs, even with `--quiet`. Honors `NO_COLOR` and piping.
     #[arg(long)]
     pub stats: bool,
+
+    /// Internal: act as the remote protocol peer over stdin/stdout. Spawned on
+    /// the far host by the local side's ssh command; not for direct use.
+    #[arg(long, hide = true)]
+    pub server: bool,
+
+    /// Remote shell program for `host:path` transfers (like rsync's `-e`).
+    /// Split on whitespace, e.g. `--rsh "ssh -p 2222"`.
+    #[arg(short = 'e', long, value_name = "CMD", default_value = "ssh")]
+    pub rsh: String,
+
+    /// Transfer whole files instead of computing deltas (remote transfers).
+    #[arg(short = 'W', long = "whole-file")]
+    pub whole_file: bool,
+
+    /// Compress whole-file payloads on the wire with zstd (remote transfers),
+    /// like rsync's `-z`.
+    #[arg(short = 'z', long)]
+    pub compress: bool,
+
+    /// zstd level for `--compress` (1–22; higher = smaller but slower).
+    #[arg(long, value_name = "N", default_value_t = 3)]
+    pub compress_level: i32,
+}
+
+/// CLI form of the device performance tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ProfileArg {
+    /// Detect the tier automatically from CPU count and RAM.
+    Auto,
+    /// Conserve resources for small/constrained devices.
+    Low,
+    /// Balanced desktop/laptop defaults.
+    Balanced,
+    /// Use workstation/server hardware fully.
+    High,
 }
 
 /// How to render output.
@@ -214,9 +255,25 @@ impl From<BackendArg> for ripsync_core::apply::Backend {
 }
 
 impl Args {
-    /// Resolve the worker-thread count (CLI override or CPU count).
+    /// Resolve the device performance tier (`--profile`, or auto-detect).
+    #[must_use]
+    pub fn resolve_profile(&self) -> ripsync_core::tune::Profile {
+        use ripsync_core::tune::Profile;
+        match self.profile {
+            ProfileArg::Auto => ripsync_core::tune::detect(),
+            ProfileArg::Low => Profile::Low,
+            ProfileArg::Balanced => Profile::Balanced,
+            ProfileArg::High => Profile::High,
+        }
+    }
+
+    /// Resolve the worker-thread count: an explicit `--threads`, else the count
+    /// implied by the resolved performance tier.
     #[must_use]
     pub fn thread_count(&self) -> usize {
-        self.threads.unwrap_or_else(num_cpus::get)
+        if let Some(t) = self.threads {
+            return t;
+        }
+        self.resolve_profile().params(num_cpus::get()).threads
     }
 }
