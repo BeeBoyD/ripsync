@@ -415,7 +415,7 @@ fn copy_large_file_splice(ring: &mut IoUring, job: &Job) -> io::Result<u64> {
         }
 
         // SQE 1: splice src → pipe (fill pipe from source file).
-        let mut sqe1 = opcode::Splice::new(
+        let sqe1 = opcode::Splice::new(
             types::Fd(src_fd),
             offset as i64,       // off_in: read from this file offset
             types::Fd(pipe_write_fd),
@@ -423,10 +423,8 @@ fn copy_large_file_splice(ring: &mut IoUring, job: &Job) -> io::Result<u64> {
             this_chunk as u32,
         )
         .build()
+        .flags(squeue::Flags::IO_LINK)
         .user_data((chunk_idx * 2) as u64);
-
-        // Link to next SQE.
-        sqe1.flags |= squeue::Flags::IO_LINK.bits();
 
         // SAFETY: pipe_write_fd and src_fd are valid for the duration.
         if unsafe { ring.submission().push(&sqe1) }.is_err() {

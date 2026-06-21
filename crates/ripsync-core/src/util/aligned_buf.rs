@@ -196,7 +196,7 @@ fn alloc_fallback(size: usize, page_size: usize) -> (NonNull<u8>, Layout) {
 }
 
 #[cfg(windows)]
-extern "C" {
+unsafe extern "C" {
     fn _aligned_malloc(size: usize, alignment: usize) -> *mut std::ffi::c_void;
     fn _aligned_free(ptr: *mut std::ffi::c_void);
 }
