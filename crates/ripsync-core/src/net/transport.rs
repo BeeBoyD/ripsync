@@ -7,6 +7,8 @@
 //! Messages are framed as `[u64 little-endian length][bincode bytes]`. A 4 GiB
 //! frame cap bounds peak allocation (whole-file transfers above that are out of
 //! scope for v1 — the delta path keeps large mostly-unchanged files cheap).
+//!
+//! The cap is 256 MiB.
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
@@ -15,9 +17,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use crate::net::proto::Msg;
 use crate::{Error, Result};
 
-/// Maximum accepted frame length (4 GiB). Guards against a corrupt or hostile
+/// Maximum accepted frame length (256 MiB). Guards against a corrupt or hostile
 /// length prefix forcing an unbounded allocation.
-pub const MAX_FRAME: u64 = 4 * 1024 * 1024 * 1024;
+pub const MAX_FRAME: u64 = 256 * 1024 * 1024;
 
 /// Serialize and write one framed message, flushing the stream.
 ///
@@ -50,7 +52,9 @@ pub fn recv_msg<R: Read>(r: &mut R) -> Result<Msg> {
     if len > MAX_FRAME {
         return Err(Error::Protocol(format!("frame too large: {len} bytes")));
     }
-    let mut buf = vec![0u8; usize::try_from(len).unwrap_or(usize::MAX)];
+    let len_usize = usize::try_from(len)
+        .map_err(|_| Error::Protocol("frame length overflows usize".to_string()))?;
+    let mut buf = vec![0u8; len_usize];
     r.read_exact(&mut buf)?;
     bincode::deserialize(&buf).map_err(|e| Error::Protocol(format!("deserialize: {e}")))
 }

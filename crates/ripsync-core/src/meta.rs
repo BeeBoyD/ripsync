@@ -285,7 +285,8 @@ pub fn set_mode(path: &Path, mode: u32) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let perm = std::fs::Permissions::from_mode(mode);
+        // strip setuid/setgid and file-type bits; propagating them from a remote sender is a security risk
+        let perm = std::fs::Permissions::from_mode(mode & !0o6000 & 0o7777);
         std::fs::set_permissions(path, perm).map_err(|e| Error::io(path, e))?;
     }
     #[cfg(not(unix))]

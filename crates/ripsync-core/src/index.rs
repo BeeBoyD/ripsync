@@ -3,9 +3,7 @@
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-// foldhash is a faster, non-DoS-hardened hasher; manifest keys are local paths,
-// never attacker-controlled network input, so the trade-off is pure win.
-use foldhash::{HashMap, HashMapExt};
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::meta::{FileTypeKind, canonical_root, contained_target, meta_min};
@@ -104,6 +102,12 @@ fn metadata_dir(dst: &Path) -> crate::Result<(PathBuf, PathBuf)> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             std::fs::create_dir(&requested)
                 .map_err(|create_error| crate::Error::io(&requested, create_error))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&requested, std::fs::Permissions::from_mode(0o700))
+                    .map_err(|error| crate::Error::io(&requested, error))?;
+            }
         }
         Err(error) => return Err(crate::Error::io(&requested, error)),
     }
@@ -396,14 +400,14 @@ fn destination_matches(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::io::Write;
-    use std::path::Path;
+    #[cfg(test)]
+    mod tests {
+        use std::io::Write;
+        use std::path::Path;
 
-    use foldhash::{HashMap, HashMapExt};
+        use std::collections::HashMap;
 
-    use super::{Delta, Manifest, ManifestEntry};
+        use super::{Delta, Manifest, ManifestEntry, RIPSYNC_DIR};
 
     #[test]
     fn incomplete_journal_tail_is_ignored() {
@@ -485,5 +489,30 @@ mod tests {
         let journal = std::fs::File::create(super::journal_path(&dst)).unwrap();
         journal.set_len(super::COMPACT_BYTES + 1).unwrap();
         assert!(Manifest::needs_compaction(&dst));
+    }
+
+    #[test]
+    fn ripsync_dir_has_restrictive_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        let dst = temp.path().join("dst");
+        std::fs::create_dir_all(&dst).unwrap();
+        let manifest = Manifest {
+            version: 3,
+            entries: HashMap::new(),
+        };
+        manifest.save(&dst).unwrap();
+        let ripsync_dir = dst.join(RIPSYNC_DIR);
+        let metadata = std::fs::metadata(&ripsync_dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = metadata.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, ".ripsync dir should have 0o700 permissions");
+        }
+        #[cfg(not(unix))]
+        {
+            // On non-Unix platforms, just verify the directory exists
+            assert!(metadata.is_dir());
+        }
     }
 }

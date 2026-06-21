@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 // Plan classification keys are local relative paths and (dev, ino) pairs, never
 // attacker-controlled, so foldhash's faster non-DoS-hardened hashing is safe.
-use foldhash::{HashMap, HashMapExt, HashSet};
+use std::collections::{HashMap, HashSet};
 use rayon::prelude::*;
 
 use crate::filter::Filter;

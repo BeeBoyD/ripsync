@@ -25,7 +25,7 @@ filetime.workspace = true
 rand.workspace = true
 num_cpus.workspace = true
 reflink-copy.workspace = true
-foldhash.workspace = true
+
 bincode.workspace = true
 zstd.workspace = true
 
