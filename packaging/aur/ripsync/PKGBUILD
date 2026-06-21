@@ -1,6 +1,6 @@
 # Maintainer: ripsync contributors <ionescudan888@gmail.com>
 pkgname=ripsync
-pkgver=1.0.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc="A fast, memory-safe local directory sync tool — rsync's superpower, none of its footguns"
 arch=('x86_64' 'aarch64')
