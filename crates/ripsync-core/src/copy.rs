@@ -137,6 +137,7 @@ fn sparse_copy(src: &Path, tmp: &Path) -> io::Result<u64> {
 
     let mut offset = 0_u64;
     let mut buf = vec![0_u8; BUF];
+    let mut bytes_written = 0_u64;
     while offset < len {
         let data = match rustix::fs::seek(&infile, SeekFrom::Data(offset)) {
             Ok(data) => data,
@@ -167,9 +168,11 @@ fn sparse_copy(src: &Path, tmp: &Path) -> io::Result<u64> {
             }
             position += read as u64;
         }
+        bytes_written = hole;
         offset = hole;
     }
-    Ok(len)
+    outfile.set_len(bytes_written)?;
+    Ok(bytes_written)
 }
 
 /// Hint the kernel to read a large source sequentially and prefetch it. No-op
@@ -221,7 +224,10 @@ fn copy_file_range_all(src: &Path, tmp: &Path) -> io::Result<u64> {
         let chunk = usize::try_from(remaining.min(1 << 30)).unwrap_or(usize::MAX);
         let copied = rustix::fs::copy_file_range(&infile, None, &outfile, None, chunk)?;
         if copied == 0 {
-            break; // source shorter than expected; stop cleanly
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "source file truncated during copy",
+            ).into());
         }
         remaining -= copied as u64;
     }

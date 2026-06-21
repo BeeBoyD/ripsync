@@ -348,6 +348,9 @@ fn create_directories<R: Reporter>(
             .position(|entry| entry.rel.components().count() != depth)
             .map_or(dirs.len(), |offset| start + offset);
         dirs[start..end].par_iter().for_each(|entry| {
+            if control.is_cancelled() {
+                return;
+            }
             create_directory(entry, src, dst, root_canon, opts, reporter, counters);
         });
         control.checkpoint()?;
@@ -462,6 +465,7 @@ fn build_pool(threads: usize) -> Option<rayon::ThreadPool> {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
+            .map_err(|e| tracing::warn!("failed to create thread pool: {e}"))
             .ok()
     }
 }
@@ -630,6 +634,9 @@ fn copy_files_portable<R: Reporter>(
     for chunk in files.chunks(chunk_size) {
         control.checkpoint()?;
         chunk.par_iter().for_each(|(entry, action)| {
+            if control.is_cancelled() {
+                return;
+            }
             reporter.event(Event::FileStart {
                 rel: entry.rel.clone(),
                 len: entry.len,
@@ -876,16 +883,30 @@ fn create_symlink(
     let link_path = root_canon.join(&entry.rel);
     let target = contained_target(root_canon, &link_path)?;
 
-    // Remove anything already at the path (file, dir, or stale link).
+    // Create the symlink atomically: write to a temp name, then rename over the
+    // target. POSIX rename(2) atomically replaces any non-directory destination,
+    // eliminating the remove-then-create race window.
+    let tmp_link = target.with_file_name(format!(
+        ".ripsync-tmp-{}.{}",
+        target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("symlink"),
+        std::process::id()
+    ));
+    // Clean up any leftover tmp from a previously interrupted run.
+    let _ = std::fs::remove_file(&tmp_link);
+    symlink_impl(link_target, &tmp_link)?;
+    // rename(2) cannot replace a directory — remove it first if present.
     if let Ok(meta) = std::fs::symlink_metadata(&target) {
         if meta.is_dir() {
             std::fs::remove_dir_all(&target).map_err(|e| Error::io(&target, e))?;
-        } else {
-            std::fs::remove_file(&target).map_err(|e| Error::io(&target, e))?;
         }
     }
-
-    symlink_impl(link_target, &target)?;
+    std::fs::rename(&tmp_link, &target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_link);
+        Error::io(&target, e)
+    })?;
     set_owner_group(
         &target,
         entry.uid,

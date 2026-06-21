@@ -58,7 +58,7 @@ impl CliReporter {
     }
 
     fn line(&self, msg: &str) {
-        let _g = self.lock.lock().unwrap();
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "{}{msg}", self.prefix());
     }
@@ -72,7 +72,7 @@ impl CliReporter {
         }
         self.json
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .push(serde_json::Value::Object(obj));
     }
 
@@ -89,7 +89,7 @@ impl CliReporter {
         if plan.deletions.is_empty() || self.format == OutputFormat::Json || self.quiet {
             return;
         }
-        let _g = self.lock.lock().unwrap();
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = std::io::stdout().lock();
         let _ = writeln!(
             out,
@@ -144,8 +144,8 @@ impl CliReporter {
         status: RunStatus,
         verification: &VerificationSummary,
     ) {
-        let events = self.json.lock().unwrap().clone();
-        let lifecycle = self.lifecycle.lock().unwrap();
+        let events = self.json.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let lifecycle = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         let report = serde_json::json!({
             "src": src,
             "dst": dst,
@@ -188,7 +188,7 @@ impl Reporter for CliReporter {
         let json = self.format == OutputFormat::Json;
         match ev {
             Event::Phase(phase) => {
-                let mut lifecycle = self.lifecycle.lock().unwrap();
+                let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
                 let elapsed = u64::try_from(lifecycle.phase_started.elapsed().as_millis())
                     .unwrap_or(u64::MAX);
                 let previous = phase_word(lifecycle.phase).to_string();
@@ -197,7 +197,7 @@ impl Reporter for CliReporter {
                 lifecycle.phase_started = Instant::now();
             }
             Event::BackendSelected { backend, reason } => {
-                let mut lifecycle = self.lifecycle.lock().unwrap();
+                let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
                 lifecycle.backend = Some(backend.into());
                 lifecycle.backend_reason = Some(reason.into());
             }
@@ -265,7 +265,7 @@ impl Reporter for CliReporter {
                         serde_json::json!({ "error": error }),
                     );
                 } else {
-                    let _g = self.lock.lock().unwrap();
+                    let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
                     let mut err = std::io::stderr().lock();
                     let _ = writeln!(err, "\x1b[31merror\x1b[0m  {}: {error}", rel.display());
                 }
@@ -278,7 +278,7 @@ impl Reporter for CliReporter {
                         serde_json::json!({ "detail": detail }),
                     );
                 } else {
-                    let _g = self.lock.lock().unwrap();
+                    let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
                     eprintln!("verify  {}: {detail}", rel.display());
                 }
             }

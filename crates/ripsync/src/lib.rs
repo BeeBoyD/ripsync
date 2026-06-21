@@ -343,15 +343,25 @@ fn build_filter(args: &Args) -> Result<Filter> {
         builder.exclude(pat.clone());
     }
     if let Some(path) = &args.files_from {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading --files-from {}", path.display()))?;
-        let paths: Vec<PathBuf> = text
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(PathBuf::from)
-            .collect();
-        builder.files_from(paths);
+        use std::io::{BufRead, BufReader};
+
+        let file = std::fs::File::open(path).map_err(|e| Error::io(path, e))?;
+        let reader = BufReader::new(file);
+        const MAX_LINES: usize = 1_000_000;
+        let mut lines = Vec::new();
+        for (i, line) in reader.lines().enumerate() {
+            if i >= MAX_LINES {
+                return Err(Error::Filter(format!(
+                    "--files-from: exceeded {} line limit",
+                    MAX_LINES
+                )).into());
+            }
+            let line = line.map_err(|e| Error::io(path, e))?;
+            if !line.is_empty() && !line.starts_with('#') {
+                lines.push(PathBuf::from(line.trim()));
+            }
+        }
+        builder.files_from(lines);
     }
     Ok(builder.build()?)
 }

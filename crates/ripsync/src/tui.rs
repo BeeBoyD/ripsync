@@ -42,13 +42,13 @@ impl Approval {
 
     fn decide(&self, approved: bool) {
         let (lock, wake) = &*self.state;
-        *lock.lock().unwrap() = Some(approved);
+        *lock.lock().unwrap_or_else(|e| e.into_inner()) = Some(approved);
         wake.notify_all();
     }
 
     fn wait(&self, control: &RunControl) -> ripsync_core::Result<bool> {
         let (lock, wake) = &*self.state;
-        let mut decision = lock.lock().unwrap();
+        let mut decision = lock.lock().unwrap_or_else(|e| e.into_inner());
         while decision.is_none() {
             if control.is_cancelled() {
                 return Err(Error::Cancelled);
@@ -143,7 +143,7 @@ struct TuiReporter {
 
 impl Reporter for TuiReporter {
     fn event(&self, event: Event) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         match event {
             Event::Phase(phase) => state.phase = phase,
             Event::PlanningProgress { entries } => state.planning_entries = entries,
@@ -295,12 +295,12 @@ pub fn run(args: &Args, threads: usize, filter: &Filter) -> Result<()> {
     let result = loop {
         terminal
             .terminal
-            .draw(|frame| draw(frame, args, threads, &state.lock().unwrap(), &ui, no_color))?;
+            .draw(|frame| draw(frame, args, threads, &state.lock().unwrap_or_else(|e| e.into_inner()), &ui, no_color))?;
         if let Ok(result) = result_rx.try_recv() {
-            state.lock().unwrap().finished = true;
+            state.lock().unwrap_or_else(|e| e.into_inner()).finished = true;
             loop {
                 terminal.terminal.draw(|frame| {
-                    draw(frame, args, threads, &state.lock().unwrap(), &ui, no_color);
+                    draw(frame, args, threads, &state.lock().unwrap_or_else(|e| e.into_inner()), &ui, no_color);
                 })?;
                 if event::poll(Duration::from_millis(100))? {
                     if let CtEvent::Key(key) = event::read()? {
@@ -378,7 +378,7 @@ fn run_worker<R: Reporter>(
         control,
         reporter,
     )?;
-    state.lock().unwrap().deletions = plan
+    state.lock().unwrap_or_else(|e| e.into_inner()).deletions = plan
         .deletions
         .iter()
         .map(|deletion| deletion.rel.display().to_string())
@@ -475,7 +475,7 @@ fn handle_key(
         }
         return;
     }
-    if state.lock().unwrap().phase == RunPhase::Review {
+    if state.lock().unwrap_or_else(|e| e.into_inner()).phase == RunPhase::Review {
         match key.code {
             KeyCode::Esc => approval.decide(false),
             KeyCode::Backspace => {

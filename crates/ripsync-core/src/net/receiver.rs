@@ -104,7 +104,30 @@ pub fn run_receiver<C: Read + Write, R: Reporter>(
                         continue;
                     }
                 };
-                let _ = std::fs::remove_file(&dst);
+                // Remove existing entry; must handle directory (remove_file silently fails on dirs)
+                if let Ok(meta) = std::fs::symlink_metadata(&dst) {
+                    if meta.is_dir() {
+                        let _ = std::fs::remove_dir_all(&dst);
+                    } else {
+                        let _ = std::fs::remove_file(&dst);
+                    }
+                }
+                // Security: reject symlink targets that escape the destination root
+                #[cfg(unix)]
+                {
+                    use std::path::Component;
+                    if target.is_absolute()
+                        || target.components().any(|c| c == Component::ParentDir)
+                    {
+                        fail(
+                            reporter,
+                            &mut stats,
+                            &e.rel,
+                            "symlink target escapes destination root",
+                        );
+                        continue;
+                    }
+                }
                 if let Err(err) = symlink_create(target, &dst) {
                     fail(reporter, &mut stats, &e.rel, &err.to_string());
                     continue;
@@ -122,8 +145,11 @@ pub fn run_receiver<C: Read + Write, R: Reporter>(
                 let is_existing_file = existing_entry.is_some_and(Entry::is_file);
                 let unchanged = !options.checksum
                     && is_existing_file
-                    && existing_entry
-                        .is_some_and(|x| x.len == e.len && x.mtime.unix_seconds() == e.mtime_s);
+                    && existing_entry.is_some_and(|x| {
+                        x.len == e.len
+                            && x.mtime.unix_seconds() == e.mtime_s
+                            && x.mtime.nanoseconds() == e.mtime_ns
+                    });
                 if unchanged {
                     stats.skipped += 1;
                     reporter.event(Event::Skipped { rel: e.rel.clone() });
@@ -205,7 +231,7 @@ fn fetch_bytes<C: Read + Write>(
         let sig = Signature::compute(&old, None);
         send_msg(conn, &Msg::Request(Request::Delta(e.rel.clone(), sig)))?;
         match recv_msg(conn)? {
-            Msg::Data(Data::Delta(d)) => Ok(apply(&old, &d).ok()),
+            Msg::Data(Data::Delta(d)) => Ok(apply(&old, &d).map_err(|e| tracing::debug!("failed to apply delta: {e}")).ok()),
             Msg::Data(Data::Whole { bytes, zstd }) => Ok(unpack(bytes, zstd)),
             Msg::Data(Data::NotFound) => Ok(None),
             Msg::Error(e) => Err(Error::Protocol(format!("peer error: {e}"))),
@@ -226,7 +252,7 @@ fn fetch_bytes<C: Read + Write>(
 /// `None` if decompression fails (treated as a per-entry error upstream).
 fn unpack(bytes: Vec<u8>, zstd: bool) -> Option<Vec<u8>> {
     if zstd {
-        zstd::decode_all(bytes.as_slice()).ok()
+        zstd::decode_all(bytes.as_slice()).map_err(|e| tracing::debug!("failed to decompress: {e}")).ok()
     } else {
         Some(bytes)
     }
@@ -286,6 +312,17 @@ fn write_atomic(
     let tmp = parent.join(format!(".ripsync.tmp.{:016x}", rand::random::<u64>()));
     std::fs::write(&tmp, bytes).map_err(|e| Error::io(&tmp, e))?;
     apply_meta(&tmp, mode, mtime, options, true);
+    
+    // Bug 1: Remove directory if it exists before atomic replace
+    if let Ok(meta) = std::fs::symlink_metadata(dst) {
+        if meta.is_dir() {
+            if let Err(e) = std::fs::remove_dir_all(dst) {
+                // Log warning if reporter available, otherwise ignore
+                eprintln!("Warning: failed to remove directory {:?}: {}", dst, e);
+            }
+        }
+    }
+    
     if let Err(e) = atomic_replace(&tmp, dst) {
         let _ = std::fs::remove_file(&tmp);
         return Err(Error::io(dst, e));
