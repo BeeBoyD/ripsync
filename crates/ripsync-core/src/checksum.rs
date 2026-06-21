@@ -66,11 +66,67 @@ impl RollingChecksum {
         let window_len = u32::try_from(len).unwrap_or(u32::MAX);
         let mut a: u32 = 0;
         let mut b: u32 = 0;
-        for (k, &byte) in window.iter().enumerate() {
-            let weight = window_len.wrapping_sub(u32::try_from(k).unwrap_or(0));
-            a = a.wrapping_add(u32::from(byte));
-            b = b.wrapping_add(weight.wrapping_mul(u32::from(byte)));
+
+        // Scalar unrolling: process 8 bytes per iteration.
+        // This reduces loop overhead and lets the CPU schedule independent
+        // adds/muls in parallel.  For a 128 KiB window this is ~16× fewer
+        // loop iterations than the naive byte-by-byte loop.
+        let chunks = len / 8;
+        for chunk in 0..chunks {
+            let base = chunk * 8;
+            let w = window_len.wrapping_sub(base as u32);
+
+            let b0 = u32::from(window[base]);
+            let b1 = u32::from(window[base + 1]);
+            let b2 = u32::from(window[base + 2]);
+            let b3 = u32::from(window[base + 3]);
+            let b4 = u32::from(window[base + 4]);
+            let b5 = u32::from(window[base + 5]);
+            let b6 = u32::from(window[base + 6]);
+            let b7 = u32::from(window[base + 7]);
+
+            a = a.wrapping_add(
+                b0.wrapping_add(b1)
+                    .wrapping_add(b2)
+                    .wrapping_add(b3)
+                    .wrapping_add(b4)
+                    .wrapping_add(b5)
+                    .wrapping_add(b6)
+                    .wrapping_add(b7),
+            );
+
+            // b += Σ (w - i) * byte[i]  for i = 0..7
+            // Rewrite as: b += w * Σ bytes - Σ (i * byte[i])
+            let sum_bytes = b0
+                .wrapping_add(b1)
+                .wrapping_add(b2)
+                .wrapping_add(b3)
+                .wrapping_add(b4)
+                .wrapping_add(b5)
+                .wrapping_add(b6)
+                .wrapping_add(b7);
+
+            let weighted = b1
+                .wrapping_add(b2.wrapping_mul(2))
+                .wrapping_add(b3.wrapping_mul(3))
+                .wrapping_add(b4.wrapping_mul(4))
+                .wrapping_add(b5.wrapping_mul(5))
+                .wrapping_add(b6.wrapping_mul(6))
+                .wrapping_add(b7.wrapping_mul(7));
+
+            b = b.wrapping_add(w.wrapping_mul(sum_bytes).wrapping_sub(weighted));
         }
+
+        // Handle the remaining 0–7 bytes.
+        let remainder_start = chunks * 8;
+        for i in remainder_start..len {
+            let k = i;
+            let weight = window_len.wrapping_sub(u32::try_from(k).unwrap_or(0));
+            let byte = u32::from(window[i]);
+            a = a.wrapping_add(byte);
+            b = b.wrapping_add(weight.wrapping_mul(byte));
+        }
+
         Self { a, b, window_len }
     }
 

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rayon::prelude::*;
 
 use crate::control::RunControl;
-use crate::copy::{FsyncMode, ReflinkMode, copy_file_into};
+use crate::copy::{FsyncMode, ReflinkMode, copy_file_into, copy_file_into_sized};
 use crate::meta::{
     canonical_root, check_relative, contained_target, copy_xattrs, set_mode, set_mtime,
     set_owner_group, set_symlink_mtime,
@@ -55,6 +55,9 @@ pub struct ApplyOptions {
     pub backend: Backend,
     /// Optional metadata and file-layout preservation.
     pub metadata: MetadataOptions,
+    /// Buffer size for the portable copy fallback path (bytes).
+    /// `None` uses the default (1 MiB). Set from [`crate::tune::TuneParams::copy_buffer`].
+    pub copy_buffer: Option<usize>,
 }
 
 /// Optional metadata and file-layout preservation controls.
@@ -586,8 +589,12 @@ fn copy_file_atomic(
 ) -> Result<u64> {
     let src_path = src.join(&entry.rel);
     let (target, tmp) = prepare_paths(root_canon, entry)?;
-    // Copy ladder: reflink → copy_file_range → buffered. `tmp` must not pre-exist.
-    let bytes = match copy_file_into(&src_path, &tmp, opts.reflink, opts.metadata.sparse) {
+    // Copy ladder: reflink → kernel copy → buffered. `tmp` must not pre-exist.
+    let bytes = match opts.copy_buffer {
+        Some(buf_size) => copy_file_into_sized(&src_path, &tmp, opts.reflink, opts.metadata.sparse, buf_size),
+        None => copy_file_into(&src_path, &tmp, opts.reflink, opts.metadata.sparse),
+    };
+    let bytes = match bytes {
         Ok(b) => b,
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
@@ -715,7 +722,10 @@ fn copy_files_uring<R: Reporter>(
         } else {
             // Fall back: remove any partial temp, then portable copy.
             let _ = std::fs::remove_file(&p.tmp);
-            copy_file_into(&p.src_path, &p.tmp, opts.reflink, opts.metadata.sparse)
+            (match opts.copy_buffer {
+                Some(buf_size) => copy_file_into_sized(&p.src_path, &p.tmp, opts.reflink, opts.metadata.sparse, buf_size),
+                None => copy_file_into(&p.src_path, &p.tmp, opts.reflink, opts.metadata.sparse),
+            })
                 .map_err(|e| Error::io(&p.src_path, e))
                 .and_then(|bytes| {
                     finalize_file(&p.src_path, &p.target, &p.tmp, p.entry, opts).map(|()| bytes)

@@ -412,6 +412,7 @@ fn run_worker<R: Reporter>(
             fsync: args.fsync.into(),
             backend: args.backend.into(),
             metadata,
+            copy_buffer: None,
         },
         reporter,
         control,
