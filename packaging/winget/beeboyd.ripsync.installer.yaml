@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 PackageIdentifier: beeboyd.ripsync
-PackageVersion: 1.0.0
+PackageVersion: 1.2.0
 InstallerType: wix
 Scope: machine
 InstallModes:

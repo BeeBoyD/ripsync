@@ -1,5 +1,5 @@
 {
-    "version": "1.0.0",
+    "version": "1.2.0",
     "description": "A fast, memory-safe local directory sync tool — rsync's superpower, none of its footguns.",
     "homepage": "https://github.com/beeboyd/ripsync",
     "license": "MIT OR Apache-2.0",
