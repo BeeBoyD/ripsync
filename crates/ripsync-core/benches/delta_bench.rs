@@ -36,6 +36,16 @@ fn bench_rolling(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_rolling_new(c: &mut Criterion) {
+    let data = buf(128 * 1024, 3); // 128 KiB
+    let mut group = c.benchmark_group("rolling_checksum_new");
+    group.throughput(Throughput::Bytes(data.len() as u64));
+    group.bench_function("new_128KiB", |b| {
+        b.iter(|| black_box(RollingChecksum::new(black_box(&data))));
+    });
+    group.finish();
+}
+
 fn bench_encode(c: &mut Criterion) {
     let old = buf(1 << 20, 2); // 1 MiB
     // `new` = old with a 1 KiB patch in the middle (the realistic delta case).
@@ -57,5 +67,5 @@ fn bench_encode(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_rolling, bench_encode);
+criterion_group!(benches, bench_rolling, bench_rolling_new, bench_encode);
 criterion_main!(benches);

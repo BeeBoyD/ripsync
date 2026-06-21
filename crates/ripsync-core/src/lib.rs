@@ -9,11 +9,19 @@
 // everywhere that does not explicitly `allow` it. Every `unsafe` block in those
 // modules carries a `// SAFETY:` comment.
 #![cfg_attr(
-    not(any(all(target_os = "linux", feature = "io-uring"), windows)),
+    not(any(
+        all(target_os = "linux", feature = "io-uring"),
+        windows,
+        target_os = "macos"
+    )),
     forbid(unsafe_code)
 )]
 #![cfg_attr(
-    any(all(target_os = "linux", feature = "io-uring"), windows),
+    any(
+        all(target_os = "linux", feature = "io-uring"),
+        windows,
+        target_os = "macos"
+    ),
     deny(unsafe_code)
 )]
 #![warn(clippy::pedantic)]
@@ -33,6 +41,7 @@ pub mod net;
 pub mod plan;
 pub mod report;
 pub mod tune;
+pub mod util;
 pub mod verify;
 pub mod walk;
 

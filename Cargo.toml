@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/ripsync-core", "crates/ripsync", "xtask"]
 
 [workspace.package]
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["ripsync contributors"]
@@ -40,7 +40,7 @@ rand = "0.8"
 num_cpus = "1"
 reflink-copy = "0.1"
 foldhash = "0.1"
-rustix = { version = "1", features = ["fs", "process"] }
+rustix = { version = "1", features = ["fs", "param", "process"] }
 bincode = "1"
 zstd = "0.13"
 xattr = "1"

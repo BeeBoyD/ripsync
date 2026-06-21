@@ -24,6 +24,7 @@
 
 use std::collections::HashMap;
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::checksum::{RollingChecksum, StrongHash, strong_hash};
@@ -119,18 +120,14 @@ impl Signature {
     pub fn compute(old: &[u8], block_override: Option<usize>) -> Self {
         let block = block_override.map_or_else(|| block_size_for(old.len()), |b| b.max(1));
         let block_size = u32::try_from(block).unwrap_or(u32::MAX);
-        let mut blocks = Vec::new();
-        let mut start = 0;
-        while start < old.len() {
-            let end = (start + block).min(old.len());
-            let chunk = &old[start..end];
-            blocks.push(BlockSig {
+        let blocks: Vec<BlockSig> = old
+            .par_chunks(block)
+            .map(|chunk| BlockSig {
                 weak: RollingChecksum::new(chunk).value(),
                 strong: strong_hash(chunk),
                 len: u32::try_from(chunk.len()).unwrap_or(u32::MAX),
-            });
-            start = end;
-        }
+            })
+            .collect();
         Self { block_size, blocks }
     }
 

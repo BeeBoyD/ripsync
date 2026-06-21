@@ -222,6 +222,7 @@ pub(crate) fn run_local_once(args: &Args, threads: usize, filter: &Filter) -> Re
             fsync: args.fsync.into(),
             backend: args.backend.into(),
             metadata,
+            copy_buffer: None,
         },
         &reporter,
         &control,
