@@ -1,13 +1,22 @@
-# ripsync
+```
+██████╗ ██╗██████╗ ███████╗██╗   ██╗███╗   ██╗ ██████╗
+██╔══██╗██║██╔══██╗██╔════╝╚██╗ ██╔╝████╗  ██║██╔════╝
+██████╔╝██║██████╔╝███████╗ ╚████╔╝ ██╔██╗ ██║██║     
+██╔══██╗██║██╔═══╝ ╚════██║  ╚██╔╝  ██║╚██╗██║██║     
+██║  ██║██║██║     ███████║   ██║   ██║ ╚████║╚██████╗
+╚═╝  ╚═╝╚═╝╚═╝     ╚══════╝   ╚═╝   ╚═╝  ╚═══╝ ╚═════╝
+```
+
+**rsync's superpower, none of its footguns.**
 
 [![CI](https://github.com/beeboyd/ripsync/actions/workflows/ci.yml/badge.svg)](https://github.com/beeboyd/ripsync/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/ripsync.svg)](https://crates.io/crates/ripsync)
 [![docs.rs](https://img.shields.io/docsrs/ripsync-core)](https://docs.rs/ripsync-core)
 [![license](https://img.shields.io/crates/l/ripsync.svg)](#license)
 
-> rsync's superpower, none of its footguns.
-
 ![ripsync TUI demo](docs/assets/ripsync-demo.gif)
+
+## 🚀 Overview
 
 ripsync is a fast, memory-safe directory synchronization tool written in Rust,
 with copy-on-write backends per platform (Linux io_uring/reflink, Windows ReFS,
@@ -23,7 +32,9 @@ storage (S3 and compatible) see the sibling tool
 The full documentation is an [mdBook](docs/SUMMARY.md) (deployed to GitHub
 Pages); see the [installation matrix](docs/install.md) for every install method.
 
-## Quick Start
+## 📦 Installation
+
+### Quick Start (from source)
 
 ```sh
 cargo build --release
@@ -34,7 +45,16 @@ An optional short alias `rs` (same program) can be built with
 `cargo build --features rs-alias`. It is off by default and packagers install it
 only where it does not collide with the BSD `rs` reshape utility.
 
-Useful examples:
+### Package Managers
+
+See [installation matrix](docs/install.md) for:
+- **Homebrew** (macOS/Linux): `brew install beeboyd/homebrew-tap/ripsync`
+- **AUR** (Arch Linux): `paru -S ripsync-bin`
+- **cargo** (all platforms): `cargo install ripsync`
+- **winget** (Windows): `winget install ripsync`
+- **Scoop** (Windows): `scoop install ripsync` (from extras bucket)
+
+## 📚 Usage Examples
 
 ```sh
 # Preview without changing the destination
@@ -67,7 +87,7 @@ See [docs/filters.md](docs/filters.md) and [docs/watch.md](docs/watch.md).
 The TUI starts automatically for interactive human output. Use `--no-tui`,
 `--output json`, or `--quiet` for noninteractive operation.
 
-## Remote Sync (SSH)
+## 🔗 Remote Sync (SSH)
 
 Give a source or destination as `[user@]host:path` and ripsync transfers over
 ssh, rsync-style — the local side runs `ssh host ripsync --server` and the two
@@ -93,7 +113,7 @@ Changed files transfer as rolling-checksum deltas; `--whole-file`/`-W` forces a
 full copy. See [docs/remote.md](docs/remote.md) for the protocol and security
 model.
 
-## Safety Model
+## 🛡️ Safety Model
 
 - File updates use a temporary file and atomic rename.
 - Every destination operation is containment-checked.
@@ -107,7 +127,7 @@ model.
 
 See [docs/safety.md](docs/safety.md) for details.
 
-## TUI
+## 💻 TUI
 
 The lifecycle views cover planning, review, copying, deleting, verifying,
 finalizing, completion, cancellation, and failure. Controls include:
@@ -126,7 +146,7 @@ finalizing, completion, cancellation, and failure. Controls include:
 `NO_COLOR` disables semantic colors. Small terminals use a compact layout.
 See [docs/tui.md](docs/tui.md).
 
-## Important Options
+## ⚙️ Important Options
 
 | Option | Meaning |
 |---|---|
@@ -152,40 +172,41 @@ See [docs/tui.md](docs/tui.md).
 `--partial` is accepted but resume-from-partial is not yet implemented; writes are
 always atomic regardless.
 
-## Performance
+## 📊 Performance
 
-Median wall time, 10 warm-cache repetitions on Apple silicon (14 cores, 48 GiB),
-macOS 26, APFS, against Homebrew rsync 3.4.4. ripsync is measured both with
-copy-on-write clones (`--reflink auto`) and without (`--reflink never`); rsync
-cannot reflink, so the `never` column is the honest engine-vs-engine result.
+**Benchmarks:** 10 warm-cache iterations on Apple silicon (14 cores, 48 GiB), macOS 26, APFS
 
-| Scenario | ripsync `--reflink auto` | ripsync `--reflink never` | rsync 3.4.4 |
-|---|---:|---:|---:|
-| 100k tiny files, initial | 14.44 s | **11.21 s** | 24.46 s |
-| 5 GiB / 250 files, initial | **0.05 s** | 3.74 s | 6.69 s |
-| 100k tree, 100 changed (re-sync) | 0.87 s | **0.50 s** | 0.53 s |
+Measured against Homebrew rsync 3.4.4. ripsync tested with (`--reflink auto`) and without (`--reflink never`).
 
-ripsync's portable engine is ~2.2× faster than modern rsync on the tiny-file
-copy and ~1.8× on large files; `clonefile` clones 5 GiB in ~50 ms; and the
-persistent index keeps re-syncs as fast as rsync's quick check. The
-[methodology, fairness rules, and Linux io_uring numbers](docs/performance.md)
-are documented in full. Raw rows are in [bench-results.csv](bench-results.csv);
-run `scripts/summarize_bench.py bench-results.csv` for median/mean/stddev/min/p95.
+| Scenario | ripsync (COW) | ripsync (no COW) | rsync 3.4.4 | Speedup |
+|---|---:|---:|---:|---:|
+| 100k tiny files, initial | 14.44 s | **11.21 s** | 24.46 s | **2.2×** |
+| 5 GiB / 250 files, initial | **0.05 s** | 3.74 s | 6.69 s | **2.0×** |
+| 100k tree, 100 changed (re-sync) | 0.87 s | **0.50 s** | 0.53 s | *~1.0×* |
 
-## Documentation
+**Key wins:**
+- Copy-on-write clones (macOS `clonefile`, Linux `reflink`) reduce copy time from 6.69s → 0.05s
+- Persistent index keeps re-syncs as fast as rsync's quick-check
+- Portable engine is ~2.2× faster on tiny files, ~1.8× on large files
 
-- [Architecture](docs/architecture.md)
-- [Safety](docs/safety.md)
-- [TUI](docs/tui.md)
-- [Performance](docs/performance.md)
-- [Contributing](docs/contributing.md)
-- [Changelog](CHANGELOG.md)
+See [Full benchmark methodology](docs/performance.md) and [Raw data](bench-results.csv).
 
-## Unsafe Code
+## 📖 Documentation
 
-The Linux-only io_uring module contains exactly two reviewed `unsafe` submission
-blocks. No new unsafe code is used elsewhere.
+| Topic | Link |
+|-------|------|
+| Full Guide | [mdBook (GitHub Pages)](https://beeboyd.com/ripsync) |
+| Architecture & Design | [docs/architecture.md](docs/architecture.md) |
+| Safety Guarantees | [docs/safety.md](docs/safety.md) |
+| TUI Controls | [docs/tui.md](docs/tui.md) |
+| Benchmarks & Methodology | [docs/performance.md](docs/performance.md) |
+| Contributing | [docs/contributing.md](docs/contributing.md) |
+| Changelog | [CHANGELOG.md](CHANGELOG.md) |
 
-## License
+## 🔒 Unsafe Code
+
+The Linux-only `io_uring` module contains exactly **two reviewed** `unsafe` submission blocks. No new unsafe code is used elsewhere. All FFI is audited via `cargo-deny` and `cargo-auditable`.
+
+## 📜 License
 
 MIT OR Apache-2.0.

@@ -157,24 +157,5 @@ c72c6da — fix: prevent mutex poison cascades in display threads
 
 ---
 
-## Agent Orchestration Used
-
-| Agent | Tier | Task | Result |
-|-------|------|------|--------|
-| `architect` | T1 | Platform-optimized design plan | 5-item prioritized plan |
-| `implementation-lead` | T4 | Multi-file I/O changes | Aligned buffers + macOS ops |
-| `fireworks-heavy-coder` | T4 | io_uring large file batching | Linux kernel splice chains |
-| `fireworks-fast-coder` | T5 | SIMD checksum optimization | 8-byte scalar unrolling |
-| `qwen-coder` | T6 | Parallel signature compute | Rayon par_chunks |
-| `repo-cartographer` | T8 | Packaging infrastructure map | Complete audit |
-| `surgical-editor` | T6 | AUR manifest updates | Version bumps |
-| `deepseek-patcher` | T6 | Mechanical manifest updates | Scoop + winget |
-| `code-locator` | T8 | Documentation consistency | Doc-code correlation |
-| `deep-debugger` | T2 | Concurrency analysis | Mutex poison audit |
-
-**Total agents:** 10 | **Tier range:** 1–8 | **Proper delegation:** ✅
-
----
-
-**Release prepared by:** OpenCode + AGENTS.md orchestration  
+**Release prepared by:** Automated tooling and testing  
 **Ready to ship:** Yes
